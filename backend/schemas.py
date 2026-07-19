@@ -1,5 +1,10 @@
-from pydantic import BaseModel
+import re
+from pydantic import BaseModel, field_validator
 from typing import Optional, List
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_ROLES = {"user", "admin", "dev"}
+_ACOES = {"aprovado", "reprovado"}
 
 
 class UsuarioCreate(BaseModel):
@@ -7,6 +12,20 @@ class UsuarioCreate(BaseModel):
     email: str
     password: str
     role: str = "user"
+
+    @field_validator("email")
+    @classmethod
+    def _valid_email(cls, v: str) -> str:
+        if not _EMAIL_RE.match(v):
+            raise ValueError("email inválido")
+        return v
+
+    @field_validator("role")
+    @classmethod
+    def _valid_role(cls, v: str) -> str:
+        if v not in _ROLES:
+            raise ValueError(f"role inválido (use um de {_ROLES})")
+        return v
 
 
 class AmbienteCreate(BaseModel):
@@ -51,6 +70,13 @@ class ConfigTransicaoCreate(BaseModel):
     atividade_destino_id: int
     gera_nova_revisao: bool = False
 
+    @field_validator("acao")
+    @classmethod
+    def _valid_acao(cls, v: str) -> str:
+        if v not in _ACOES:
+            raise ValueError(f"acao inválida (use um de {_ACOES})")
+        return v
+
 
 class UsuarioUpdate(BaseModel):
     role: Optional[str] = None
@@ -60,6 +86,13 @@ class UsuarioUpdate(BaseModel):
 class TransicaoRequest(BaseModel):
     acao: str
     observacao: Optional[str] = None
+
+    @field_validator("acao")
+    @classmethod
+    def _valid_acao(cls, v: str) -> str:
+        if v not in _ACOES:
+            raise ValueError(f"acao inválida (use um de {_ACOES})")
+        return v
 
 
 class ValorCampoItem(BaseModel):

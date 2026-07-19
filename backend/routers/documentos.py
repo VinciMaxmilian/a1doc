@@ -6,7 +6,7 @@ from auth import get_current_user, require_admin
 import models, schemas, os, uuid, shutil
 from pathlib import Path
 from typing import List
-from utils import doc_rev_dir
+from utils import doc_rev_dir, safe_filename, extension_allowed, unique_path
 
 router = APIRouter(prefix="/documentos", tags=["documentos"])
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "./uploads"))
@@ -133,7 +133,11 @@ async def upload(
     arquivos_info = []
     try:
         for arquivo in arquivos:
-            tmp_path = tmp_dir / arquivo.filename
+            filename = safe_filename(arquivo.filename)
+            if not extension_allowed(filename):
+                shutil.rmtree(str(tmp_dir), ignore_errors=True)
+                raise HTTPException(400, f"Extensão não permitida: '{filename}'")
+            tmp_path = tmp_dir / filename
             size = 0
             with open(tmp_path, "wb") as f:
                 while True:
@@ -145,7 +149,7 @@ async def upload(
                         shutil.rmtree(str(tmp_dir), ignore_errors=True)
                         raise HTTPException(413, f"'{arquivo.filename}' excede o limite de 100MB")
                     f.write(chunk)
-            arquivos_info.append({"filename": arquivo.filename, "tmp_path": str(tmp_path)})
+            arquivos_info.append({"filename": filename, "tmp_path": str(tmp_path)})
     except HTTPException:
         raise
     except Exception as exc:
@@ -200,18 +204,33 @@ async def upload_revisao(
     if not doc:
         raise HTTPException(404, "Documento não encontrado")
 
+    filename = safe_filename(arquivo.filename)
+    if not extension_allowed(filename):
+        raise HTTPException(400, f"Extensão não permitida: '{filename}'")
+
     file_dir = doc_rev_dir(
         UPLOAD_DIR,
         doc.ambiente.nome, doc.area.nome, doc.projeto.nome,
         doc.nome, _rev(doc.revisao_indice),
     )
-    final_path = file_dir / arquivo.filename
+    MAX_SIZE = 100 * 1024 * 1024  # 100 MB
+    final_path = unique_path(file_dir, filename)
+    size = 0
     with open(final_path, "wb") as f:
-        shutil.copyfileobj(arquivo.file, f)
+        while True:
+            chunk = await arquivo.read(1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > MAX_SIZE:
+                f.close()
+                final_path.unlink(missing_ok=True)
+                raise HTTPException(413, f"'{filename}' excede o limite de 100MB")
+            f.write(chunk)
     rel_path = str(final_path.relative_to(UPLOAD_DIR)).replace("\\", "/")
 
     db.add(models.DocumentoArquivo(
-        documento_id=doc.id, arquivo_nome=arquivo.filename,
+        documento_id=doc.id, arquivo_nome=filename,
         arquivo_path=rel_path,
         revisao_indice=doc.revisao_indice, uploaded_by_id=user.id,
         atividade_id=doc.atividade_atual_id,

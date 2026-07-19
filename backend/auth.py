@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from jose import JWTError, jwt
 import bcrypt as _bcrypt
 from fastapi import Depends, HTTPException
@@ -23,7 +23,7 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 
 def create_token(user_id: int) -> str:
-    data = {"sub": str(user_id), "exp": datetime.utcnow() + timedelta(minutes=EXPIRE)}
+    data = {"sub": str(user_id), "exp": datetime.now(timezone.utc) + timedelta(minutes=EXPIRE)}
     return jwt.encode(data, SECRET_KEY, algorithm=ALGORITHM)
 
 

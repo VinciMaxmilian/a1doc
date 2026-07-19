@@ -45,5 +45,12 @@ logs/
 *.db
 *.sqlite3
 
+# Celery runtime
+celerybeat-schedule*
+celerybeat.pid
+
+# Uploads (dados de runtime)
+backend/uploads/
+
 # Claude
 .claude/settings.local.json

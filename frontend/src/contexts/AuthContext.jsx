@@ -4,18 +4,18 @@ const Ctx = createContext(null)
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('a1doc_user')) } catch { return null }
+    try { return JSON.parse(localStorage.getItem('indoc_user')) } catch { return null }
   })
 
   function login(userData, token) {
-    localStorage.setItem('a1doc_token', token)
-    localStorage.setItem('a1doc_user', JSON.stringify(userData))
+    localStorage.setItem('indoc_token', token)
+    localStorage.setItem('indoc_user', JSON.stringify(userData))
     setUser(userData)
   }
 
   function logout() {
-    localStorage.removeItem('a1doc_token')
-    localStorage.removeItem('a1doc_user')
+    localStorage.removeItem('indoc_token')
+    localStorage.removeItem('indoc_user')
     setUser(null)
   }
 

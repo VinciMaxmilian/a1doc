@@ -1,11 +1,12 @@
 from celery_app import celery_app
 from database import SessionLocal
-import models, shutil, uuid
+import models, shutil, uuid, logging
 from pathlib import Path
 import os
 from dotenv import load_dotenv
-from utils import doc_rev_dir
+from utils import doc_rev_dir, unique_path
 
+logger = logging.getLogger("indoc.tasks")
 load_dotenv()
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "C:/A1Doc/files"))
 
@@ -99,14 +100,14 @@ def processar_upload(self, job_id: str, metadata: dict, arquivos_tmp: list):
         for arq_info in arquivos_tmp:
             tmp_path = Path(arq_info["tmp_path"])
             filename  = arq_info["filename"]
-            final_path = file_dir / filename
+            final_path = unique_path(file_dir, filename)
             shutil.move(str(tmp_path), str(final_path))
 
             rel_path = str(final_path.relative_to(UPLOAD_DIR)).replace("\\", "/")
 
             db.add(models.DocumentoArquivo(
                 documento_id=doc.id,
-                arquivo_nome=filename,
+                arquivo_nome=final_path.name,
                 arquivo_path=rel_path,
                 revisao_indice=doc.revisao_indice,
                 uploaded_by_id=metadata["responsavel_id"],
@@ -136,6 +137,7 @@ def processar_upload(self, job_id: str, metadata: dict, arquivos_tmp: list):
         db.commit()
 
     except Exception as exc:
+        logger.exception("Erro ao processar upload job %s", job_id)
         db.rollback()
         try:
             j = db.query(models.UploadJob).filter(models.UploadJob.id == job_id).first()

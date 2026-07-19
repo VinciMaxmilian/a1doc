@@ -1,7 +1,12 @@
 from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, Text, DateTime, JSON, UniqueConstraint
 from sqlalchemy.orm import relationship
 from database import Base
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def utcnow() -> datetime:
+    """UTC naïve (compatível com coluna DATETIME do MySQL)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class User(Base):
@@ -99,15 +104,15 @@ class Documento(Base):
     __tablename__ = "documentos"
     id = Column(Integer, primary_key=True)
     codigo = Column(String(100), unique=True, nullable=False)
-    nome = Column(String(500), nullable=False)
-    ambiente_id = Column(Integer, ForeignKey("ambientes.id"), nullable=False)
-    area_id = Column(Integer, ForeignKey("areas.id"), nullable=False)
-    projeto_id = Column(Integer, ForeignKey("projetos.id"), nullable=False)
-    tipo_documento_id = Column(Integer, ForeignKey("tipos_documento.id"), nullable=False)
+    nome = Column(String(500), nullable=False, index=True)
+    ambiente_id = Column(Integer, ForeignKey("ambientes.id"), nullable=False, index=True)
+    area_id = Column(Integer, ForeignKey("areas.id"), nullable=False, index=True)
+    projeto_id = Column(Integer, ForeignKey("projetos.id"), nullable=False, index=True)
+    tipo_documento_id = Column(Integer, ForeignKey("tipos_documento.id"), nullable=False, index=True)
     responsavel_id = Column(Integer, ForeignKey("usuarios.id"), nullable=False)
     atividade_atual_id = Column(Integer, ForeignKey("atividades.id"), nullable=True)
     revisao_indice = Column(Integer, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
     ambiente = relationship("Ambiente")
     area = relationship("Area")
     projeto = relationship("Projeto")
@@ -122,14 +127,14 @@ class Documento(Base):
 class DocumentoArquivo(Base):
     __tablename__ = "documento_arquivos"
     id = Column(Integer, primary_key=True)
-    documento_id = Column(Integer, ForeignKey("documentos.id"), nullable=False)
+    documento_id = Column(Integer, ForeignKey("documentos.id"), nullable=False, index=True)
     arquivo_nome = Column(String(500), nullable=False)
     arquivo_path = Column(String(1000), nullable=False)
     revisao_indice = Column(Integer, default=0)
     observacao = Column(Text, nullable=True)
     atividade_id = Column(Integer, ForeignKey("atividades.id"), nullable=True)
     uploaded_by_id = Column(Integer, ForeignKey("usuarios.id"), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
     documento = relationship("Documento", back_populates="arquivos")
     uploaded_by = relationship("User")
     atividade = relationship("Atividade")
@@ -138,13 +143,13 @@ class DocumentoArquivo(Base):
 class HistoricoWorkflow(Base):
     __tablename__ = "historico_workflow"
     id = Column(Integer, primary_key=True)
-    documento_id = Column(Integer, ForeignKey("documentos.id"), nullable=False)
+    documento_id = Column(Integer, ForeignKey("documentos.id"), nullable=False, index=True)
     atividade_origem_id = Column(Integer, ForeignKey("atividades.id"), nullable=True)
     atividade_destino_id = Column(Integer, ForeignKey("atividades.id"), nullable=False)
     acao = Column(String(50))
     user_id = Column(Integer, ForeignKey("usuarios.id"), nullable=False)
     observacao = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
     documento = relationship("Documento", back_populates="historico")
     user = relationship("User")
     atividade_origem = relationship("Atividade", foreign_keys=[atividade_origem_id])
@@ -154,7 +159,7 @@ class HistoricoWorkflow(Base):
 class ValorCampo(Base):
     __tablename__ = "valores_campo"
     id = Column(Integer, primary_key=True)
-    documento_id = Column(Integer, ForeignKey("documentos.id"), nullable=False)
+    documento_id = Column(Integer, ForeignKey("documentos.id"), nullable=False, index=True)
     campo_id = Column(Integer, ForeignKey("campos_formulario.id"), nullable=False)
     valor = Column(Text, nullable=True)
     documento = relationship("Documento", back_populates="valores_campos")
@@ -168,5 +173,5 @@ class UploadJob(Base):
     status = Column(String(20), default="pendente")  # pendente, processando, concluido, erro
     documento_id = Column(Integer, ForeignKey("documentos.id"), nullable=True)
     erro_msg = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
     documento = relationship("Documento")

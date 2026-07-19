@@ -3,7 +3,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from database import get_db
 import models, schemas
-from auth import hash_password, verify_password, create_token, get_current_user
+from auth import hash_password, verify_password, create_token, get_current_user, require_admin
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -21,9 +21,13 @@ def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
 
 
 @router.post("/registrar")
-def registrar(data: schemas.UsuarioCreate, db: Session = Depends(get_db)):
+def registrar(data: schemas.UsuarioCreate, db: Session = Depends(get_db),
+              _: models.User = Depends(require_admin)):
+    """Criação de usuário restrita a Admin/Dev (evita escalação de privilégio)."""
     if db.query(models.User).filter(models.User.username == data.username).first():
         raise HTTPException(400, "Username já existe")
+    if db.query(models.User).filter(models.User.email == data.email).first():
+        raise HTTPException(400, "Email já existe")
     user = models.User(
         username=data.username, email=data.email,
         hashed_password=hash_password(data.password), role=data.role

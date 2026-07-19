@@ -1,5 +1,5 @@
 {
-  "name": "a1doc-frontend",
+  "name": "indoc-frontend",
   "version": "1.0.0",
   "scripts": {
     "dev": "vite",

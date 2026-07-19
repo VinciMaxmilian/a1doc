@@ -71,7 +71,7 @@ export default function Login() {
         </form>
 
         <p style={{ textAlign: 'center', marginTop: 20, fontSize: 12, color: 'var(--muted)' }}>
-          A1Doc · GED corporativo
+          Indoc · GED corporativo
         </p>
       </div>
     </div>
