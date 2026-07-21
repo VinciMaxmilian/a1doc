@@ -1,77 +1,80 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
-from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import desc
-from database import get_db
-from auth import get_current_user, require_admin
-import models, schemas, os, uuid, shutil
+import logging
+import shutil
+import uuid
 from pathlib import Path
-from typing import List
-from utils import doc_rev_dir, safe_filename, extension_allowed, unique_path
+from typing import Optional
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse
+from sqlalchemy import desc
+from sqlalchemy.orm import Session, joinedload
+
+import config
+import models
+import schemas
+from auth import get_current_user, is_admin, require_admin
+from database import get_db
+from utils import (
+    doc_rev_dir,
+    ensure_within,
+    extension_allowed,
+    safe_filename,
+    unique_path,
+)
+
+logger = logging.getLogger("indoc.documentos")
 
 router = APIRouter(prefix="/documentos", tags=["documentos"])
-UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "./uploads"))
 
 
-def _rev(idx: int) -> str:
-    return str(idx + 1)
+# ────────────────────────── autorização ──────────────────────────
+
+def _pode_transitar(user: models.User, doc: models.Documento) -> bool:
+    """Quem pode mover o documento na atividade em que ele está.
+
+    Admin/dev sempre podem. Se a atividade define `role_requerido`, só esse
+    papel pode; caso contrário qualquer usuário autenticado pode.
+    """
+    if is_admin(user):
+        return True
+    ativ = doc.atividade_atual
+    if ativ is None or ativ.role_requerido is None:
+        return True
+    return user.role == ativ.role_requerido
 
 
-def _ativ(a):
-    if not a:
-        return None
-    return {"id": a.id, "nome": a.nome, "fluxo_id": a.fluxo_id,
-            "fluxo": {"id": a.fluxo.id, "numero": a.fluxo.numero, "nome": a.fluxo.nome}}
+def _pode_enviar_revisao(user: models.User, doc: models.Documento) -> bool:
+    """Responsável pelo documento, admin/dev, ou quem detém a atividade atual."""
+    return doc.responsavel_id == user.id or _pode_transitar(user, doc)
 
 
-def _doc_base(doc):
-    return {
-        "id": doc.id, "codigo": doc.codigo, "nome": doc.nome,
-        "ambiente_id": doc.ambiente_id, "area_id": doc.area_id,
-        "projeto_id": doc.projeto_id, "tipo_documento_id": doc.tipo_documento_id,
-        "responsavel": {"id": doc.responsavel.id, "username": doc.responsavel.username},
-        "atividade_atual": _ativ(doc.atividade_atual),
-        "revisao_indice": doc.revisao_indice,
-        "revisao_label": _rev(doc.revisao_indice),
-        "created_at": doc.created_at.isoformat(),
-    }
+def _exigir(condicao: bool, msg: str) -> None:
+    if not condicao:
+        raise HTTPException(403, msg)
 
 
-def _doc_detalhe(doc, db: Session):
+# ────────────────────────── serialização ──────────────────────────
+
+def _detalhe(doc: models.Documento, db: Session) -> schemas.DocumentoDetalheOut:
+    """Monta o detalhe do documento. `valores_campos` combina a definição do
+    formulário (todos os campos do tipo) com os valores já preenchidos."""
     campos = db.query(models.CampoFormulario).filter(
         models.CampoFormulario.tipo_documento_id == doc.tipo_documento_id
     ).order_by(models.CampoFormulario.ordem).all()
     valores_map = {v.campo_id: v.valor for v in doc.valores_campos}
 
-    d = _doc_base(doc)
-    d["arquivos"] = [
-        {"id": a.id, "arquivo_nome": a.arquivo_nome, "arquivo_path": a.arquivo_path,
-         "revisao_indice": a.revisao_indice, "revisao_label": _rev(a.revisao_indice),
-         "observacao": a.observacao,
-         "atividade": {"id": a.atividade.id, "nome": a.atividade.nome} if a.atividade else None,
-         "uploaded_by": {"id": a.uploaded_by.id, "username": a.uploaded_by.username},
-         "created_at": a.created_at.isoformat()}
-        for a in doc.arquivos
-    ]
-    d["historico"] = [
-        {"id": h.id,
-         "atividade_origem": {"id": h.atividade_origem.id, "nome": h.atividade_origem.nome,
-                              "fluxo_id": h.atividade_origem.fluxo_id} if h.atividade_origem else None,
-         "atividade_destino": {"id": h.atividade_destino.id, "nome": h.atividade_destino.nome,
-                               "fluxo_id": h.atividade_destino.fluxo_id},
-         "acao": h.acao, "observacao": h.observacao,
-         "user": {"id": h.user.id, "username": h.user.username},
-         "created_at": h.created_at.isoformat()}
-        for h in doc.historico
-    ]
-    d["valores_campos"] = [
-        {"campo_id": c.id, "campo_nome": c.nome, "campo_tipo": c.tipo,
-         "opcoes": c.opcoes, "valor": valores_map.get(c.id)}
+    out = schemas.DocumentoDetalheOut.model_validate(doc)
+    out.valores_campos = [
+        schemas.ValorCampoOut(
+            campo_id=c.id, campo_nome=c.nome, campo_tipo=c.tipo,
+            opcoes=c.opcoes, valor=valores_map.get(c.id),
+        )
         for c in campos
     ]
-    return d
+    return out
 
 
-def _load(doc_id: int, db: Session):
+def _load(doc_id: int, db: Session) -> Optional[models.Documento]:
     return db.query(models.Documento).options(
         joinedload(models.Documento.responsavel),
         joinedload(models.Documento.atividade_atual).joinedload(models.Atividade.fluxo),
@@ -84,7 +87,16 @@ def _load(doc_id: int, db: Session):
     ).filter(models.Documento.id == doc_id).first()
 
 
-@router.get("")
+def _load_ou_404(doc_id: int, db: Session) -> models.Documento:
+    doc = _load(doc_id, db)
+    if not doc:
+        raise HTTPException(404, "Documento não encontrado")
+    return doc
+
+
+# ────────────────────────── endpoints ──────────────────────────
+
+@router.get("", response_model=schemas.PaginaDocumentosOut)
 def listar(
     nome: str = None,
     id: int = None,
@@ -92,8 +104,8 @@ def listar(
     area_id: int = None,
     projeto_id: int = None,
     tipo_documento_id: int = None,
-    skip: int = 0,
-    limit: int = 20,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(config.DEFAULT_PAGE_SIZE, ge=1, le=config.MAX_PAGE_SIZE),
     db: Session = Depends(get_db),
     _=Depends(get_current_user),
 ):
@@ -110,61 +122,67 @@ def listar(
 
     total = q.count()
     docs = q.order_by(desc(models.Documento.created_at)).offset(skip).limit(limit).all()
-    return {"total": total, "skip": skip, "limit": limit, "itens": [_doc_base(d) for d in docs]}
+    return {"total": total, "skip": skip, "limit": limit, "itens": docs}
 
 
-@router.post("/upload")
+def _validar_hierarquia(db: Session, ambiente_id: int, area_id: int,
+                        projeto_id: int, tipo_documento_id: int) -> None:
+    """Garante que projeto→área→ambiente são consistentes entre si."""
+    projeto = db.query(models.Projeto).filter(models.Projeto.id == projeto_id).first()
+    if not projeto:
+        raise HTTPException(400, "Projeto não encontrado")
+    area = db.query(models.Area).filter(models.Area.id == area_id).first()
+    if not area or projeto.area_id != area.id:
+        raise HTTPException(400, "Projeto não pertence à área informada")
+    if area.ambiente_id != ambiente_id:
+        raise HTTPException(400, "Área não pertence ao ambiente informado")
+    if not db.query(models.TipoDocumento).filter(
+        models.TipoDocumento.id == tipo_documento_id
+    ).first():
+        raise HTTPException(400, "Tipo de documento não encontrado")
+
+
+@router.post("/upload", response_model=schemas.UploadAceitoOut, status_code=202)
 async def upload(
-    nome: str = Form(...),
+    nome: str = Form(..., min_length=1, max_length=500),
     ambiente_id: int = Form(...),
     area_id: int = Form(...),
     projeto_id: int = Form(...),
     tipo_documento_id: int = Form(...),
-    arquivos: List[UploadFile] = File(...),
+    arquivos: list[UploadFile] = File(...),
     observacao: str = Form(None),
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    MAX_SIZE = 100 * 1024 * 1024  # 100 MB
+    _validar_hierarquia(db, ambiente_id, area_id, projeto_id, tipo_documento_id)
+
     job_id = str(uuid.uuid4())
-    tmp_dir = UPLOAD_DIR / "tmp" / job_id
+    tmp_dir = config.UPLOAD_DIR / "tmp" / job_id
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
     arquivos_info = []
     try:
         for arquivo in arquivos:
-            filename = safe_filename(arquivo.filename)
+            filename = safe_filename(arquivo.filename or "")
             if not extension_allowed(filename):
-                shutil.rmtree(str(tmp_dir), ignore_errors=True)
                 raise HTTPException(400, f"Extensão não permitida: '{filename}'")
-            tmp_path = tmp_dir / filename
-            size = 0
-            with open(tmp_path, "wb") as f:
-                while True:
-                    chunk = await arquivo.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    size += len(chunk)
-                    if size > MAX_SIZE:
-                        shutil.rmtree(str(tmp_dir), ignore_errors=True)
-                        raise HTTPException(413, f"'{arquivo.filename}' excede o limite de 100MB")
-                    f.write(chunk)
-            arquivos_info.append({"filename": filename, "tmp_path": str(tmp_path)})
-    except HTTPException:
-        raise
-    except Exception as exc:
+            # unique_path evita que dois arquivos de mesmo nome no mesmo envio
+            # se sobrescrevam na área temporária.
+            tmp_path = unique_path(tmp_dir, filename)
+            await _gravar_em_disco(arquivo, tmp_path)
+            arquivos_info.append({"filename": tmp_path.name, "tmp_path": str(tmp_path)})
+    except Exception:
         shutil.rmtree(str(tmp_dir), ignore_errors=True)
-        raise HTTPException(500, f"Erro ao receber arquivos: {exc}")
+        raise
 
-    job = models.UploadJob(id=job_id, status="pendente")
-    db.add(job)
+    db.add(models.UploadJob(id=job_id, status="pendente"))
     db.commit()
 
     from tasks import processar_upload
     processar_upload.delay(
         job_id=job_id,
         metadata={
-            "nome": nome,
+            "nome": nome.strip(),
             "ambiente_id": ambiente_id,
             "area_id": area_id,
             "projeto_id": projeto_id,
@@ -178,21 +196,67 @@ async def upload(
     return {"job_id": job_id, "status": "pendente", "total_arquivos": len(arquivos_info)}
 
 
-@router.get("/jobs/{job_id}")
+async def _gravar_em_disco(arquivo: UploadFile, destino: Path) -> int:
+    """Escreve o upload em chunks, respeitando MAX_UPLOAD_BYTES.
+
+    Em caso de erro remove o arquivo parcial antes de propagar.
+    """
+    size = 0
+    try:
+        with open(destino, "wb") as f:
+            while True:
+                chunk = await arquivo.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > config.MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        413,
+                        f"'{destino.name}' excede o limite de "
+                        f"{config.MAX_UPLOAD_BYTES // (1024 * 1024)}MB",
+                    )
+                f.write(chunk)
+    except Exception:
+        destino.unlink(missing_ok=True)
+        raise
+    return size
+
+
+@router.get("/jobs/{job_id}", response_model=schemas.JobOut)
 def status_job(job_id: str, db: Session = Depends(get_db), _=Depends(get_current_user)):
     job = db.query(models.UploadJob).filter(models.UploadJob.id == job_id).first()
     if not job:
         raise HTTPException(404, "Job não encontrado")
-    return {
-        "job_id": job.id,
-        "status": job.status,
-        "documento_id": job.documento_id,
-        "erro_msg": job.erro_msg,
-        "created_at": job.created_at.isoformat(),
-    }
+    return job
 
 
-@router.post("/{doc_id}/upload-revisao")
+@router.get("/arquivos/{arquivo_id}/download")
+def baixar_arquivo(arquivo_id: int, db: Session = Depends(get_db),
+                   _=Depends(get_current_user)):
+    """Download autenticado. Os arquivos não são servidos como estáticos
+    públicos — o caminho no disco nunca é exposto ao cliente."""
+    arq = db.query(models.DocumentoArquivo).filter(
+        models.DocumentoArquivo.id == arquivo_id
+    ).first()
+    if not arq:
+        raise HTTPException(404, "Arquivo não encontrado")
+
+    try:
+        # arquivo_path vem do banco, mas validamos mesmo assim: registro
+        # antigo/corrompido não pode virar leitura arbitrária de disco.
+        caminho = ensure_within(config.UPLOAD_DIR, config.UPLOAD_DIR / arq.arquivo_path)
+    except ValueError:
+        logger.error("arquivo_path fora de UPLOAD_DIR (id=%s): %r", arq.id, arq.arquivo_path)
+        raise HTTPException(404, "Arquivo não encontrado") from None
+
+    if not caminho.is_file():
+        raise HTTPException(404, "Arquivo não encontrado no armazenamento")
+
+    return FileResponse(caminho, filename=arq.arquivo_nome,
+                        media_type="application/octet-stream")
+
+
+@router.post("/{doc_id}/upload-revisao", response_model=schemas.DocumentoDetalheOut)
 async def upload_revisao(
     doc_id: int,
     arquivo: UploadFile = File(...),
@@ -200,82 +264,86 @@ async def upload_revisao(
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    doc = db.query(models.Documento).filter(models.Documento.id == doc_id).first()
-    if not doc:
-        raise HTTPException(404, "Documento não encontrado")
+    doc = _load_ou_404(doc_id, db)
+    _exigir(_pode_enviar_revisao(user, doc),
+            "Sem permissão para enviar revisão deste documento")
 
-    filename = safe_filename(arquivo.filename)
+    filename = safe_filename(arquivo.filename or "")
     if not extension_allowed(filename):
         raise HTTPException(400, f"Extensão não permitida: '{filename}'")
 
     file_dir = doc_rev_dir(
-        UPLOAD_DIR,
+        config.UPLOAD_DIR,
         doc.ambiente.nome, doc.area.nome, doc.projeto.nome,
-        doc.nome, _rev(doc.revisao_indice),
+        doc.nome, str(doc.revisao_indice + 1),
     )
-    MAX_SIZE = 100 * 1024 * 1024  # 100 MB
     final_path = unique_path(file_dir, filename)
-    size = 0
-    with open(final_path, "wb") as f:
-        while True:
-            chunk = await arquivo.read(1024 * 1024)
-            if not chunk:
-                break
-            size += len(chunk)
-            if size > MAX_SIZE:
-                f.close()
-                final_path.unlink(missing_ok=True)
-                raise HTTPException(413, f"'{filename}' excede o limite de 100MB")
-            f.write(chunk)
-    rel_path = str(final_path.relative_to(UPLOAD_DIR)).replace("\\", "/")
+    await _gravar_em_disco(arquivo, final_path)
+    rel_path = str(final_path.relative_to(config.UPLOAD_DIR)).replace("\\", "/")
 
     db.add(models.DocumentoArquivo(
-        documento_id=doc.id, arquivo_nome=filename,
+        documento_id=doc.id, arquivo_nome=final_path.name,
         arquivo_path=rel_path,
         revisao_indice=doc.revisao_indice, uploaded_by_id=user.id,
         atividade_id=doc.atividade_atual_id,
         observacao=observacao or None,
     ))
     db.commit()
-    return _doc_detalhe(_load(doc_id, db), db)
+    return _detalhe(_load_ou_404(doc_id, db), db)
 
 
-@router.get("/{doc_id}")
+@router.get("/{doc_id}", response_model=schemas.DocumentoDetalheOut)
 def detalhe(doc_id: int, db: Session = Depends(get_db), _=Depends(get_current_user)):
-    doc = _load(doc_id, db)
-    if not doc: raise HTTPException(404, "Documento não encontrado")
-    return _doc_detalhe(doc, db)
+    return _detalhe(_load_ou_404(doc_id, db), db)
 
 
-@router.put("/{doc_id}/campos")
+@router.put("/{doc_id}/campos", response_model=schemas.OkOut)
 def atualizar_campos(doc_id: int, data: schemas.CamposUpdate,
                      db: Session = Depends(get_db), _=Depends(require_admin)):
-    if not db.query(models.Documento).filter(models.Documento.id == doc_id).first():
+    doc = db.query(models.Documento).filter(models.Documento.id == doc_id).first()
+    if not doc:
         raise HTTPException(404, "Documento não encontrado")
+
+    # Só aceita campos que pertencem ao tipo de documento — impede gravar
+    # valores órfãos, ligados a formulário de outro tipo.
+    validos = {
+        c.id for c in db.query(models.CampoFormulario.id).filter(
+            models.CampoFormulario.tipo_documento_id == doc.tipo_documento_id
+        ).all()
+    }
+    invalidos = {i.campo_id for i in data.valores} - validos
+    if invalidos:
+        raise HTTPException(
+            400, f"Campos não pertencem ao tipo do documento: {sorted(invalidos)}"
+        )
+
+    existentes = {
+        v.campo_id: v for v in db.query(models.ValorCampo).filter(
+            models.ValorCampo.documento_id == doc_id
+        ).all()
+    }
     for item in data.valores:
-        existente = db.query(models.ValorCampo).filter(
-            models.ValorCampo.documento_id == doc_id,
-            models.ValorCampo.campo_id == item.campo_id
-        ).first()
-        if existente:
-            existente.valor = item.valor
+        if item.campo_id in existentes:
+            existentes[item.campo_id].valor = item.valor
         else:
-            db.add(models.ValorCampo(documento_id=doc_id, campo_id=item.campo_id, valor=item.valor))
+            db.add(models.ValorCampo(
+                documento_id=doc_id, campo_id=item.campo_id, valor=item.valor
+            ))
     db.commit()
     return {"ok": True}
 
 
-@router.post("/{doc_id}/transitar")
+@router.post("/{doc_id}/transitar", response_model=schemas.DocumentoDetalheOut)
 def transitar(doc_id: int, req: schemas.TransicaoRequest,
               db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
-    doc = _load(doc_id, db)
-    if not doc: raise HTTPException(404, "Documento não encontrado")
+    doc = _load_ou_404(doc_id, db)
     if not doc.atividade_atual_id:
         raise HTTPException(400, "Documento sem atividade atual")
+    _exigir(_pode_transitar(user, doc), "Sem permissão para transitar este documento")
 
     trans = db.query(models.ConfigTransicao).filter(
         models.ConfigTransicao.atividade_origem_id == doc.atividade_atual_id,
-        models.ConfigTransicao.acao == req.acao
+        models.ConfigTransicao.acao == req.acao,
     ).first()
     if not trans:
         raise HTTPException(400, f"Sem transição configurada para '{req.acao}'")
@@ -285,10 +353,8 @@ def transitar(doc_id: int, req: schemas.TransicaoRequest,
         atividade_destino_id=trans.atividade_destino_id,
         acao=req.acao, user_id=user.id, observacao=req.observacao,
     ))
-
-    doc_db = db.query(models.Documento).filter(models.Documento.id == doc_id).first()
     if trans.gera_nova_revisao:
-        doc_db.revisao_indice += 1
-    doc_db.atividade_atual_id = trans.atividade_destino_id
+        doc.revisao_indice += 1
+    doc.atividade_atual_id = trans.atividade_destino_id
     db.commit()
-    return _doc_detalhe(_load(doc_id, db), db)
+    return _detalhe(_load_ou_404(doc_id, db), db)

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Layout from '../components/Layout'
-import api from '../api'
+import api, { mensagemErro } from '../api'
 
 const MAX_SIZE = 100 * 1024 * 1024 // 100 MB
 
@@ -145,7 +145,7 @@ export default function Upload() {
       setJobStatus({ status: 'pendente' })
       setFase('queued')
     } catch (err) {
-      setErro(err.response?.data?.detail || 'Erro ao enviar arquivos')
+      setErro(mensagemErro(err, 'Erro ao enviar arquivos'))
       setFase('form')
     }
   }

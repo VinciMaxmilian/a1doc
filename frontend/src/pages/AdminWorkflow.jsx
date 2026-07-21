@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import Layout from '../components/Layout'
 import GlassTabs from '../components/GlassTabs'
 import ConfirmModal from '../components/ConfirmModal'
-import api from '../api'
+import api, { mensagemErro } from '../api'
 
 const ABAS = [
   { key: 'fluxos',     label: 'Fluxos',     icon: '🔵' },
@@ -33,7 +33,7 @@ export default function AdminWorkflow() {
   const [deletando, setDeletando] = useState(false)
 
   const [novoFluxo, setNovoFluxo] = useState({ nome: '', descricao: '' })
-  const [novaAtiv, setNovaAtiv] = useState({ nome: '', fluxo_id: '' })
+  const [novaAtiv, setNovaAtiv] = useState({ nome: '', fluxo_id: '', ordem: '', role_requerido: '' })
   const [novaTrans, setNovaTrans] = useState({
     atividade_origem_id: '', acao: 'aprovado', atividade_destino_id: '', gera_nova_revisao: false,
   })
@@ -70,9 +70,16 @@ export default function AdminWorkflow() {
     if (!novaAtiv.nome || !novaAtiv.fluxo_id) return
     setSalvando(true)
     try {
-      await api.post('/workflow/atividades', { nome: novaAtiv.nome, fluxo_id: parseInt(novaAtiv.fluxo_id) })
-      setNovaAtiv({ nome: '', fluxo_id: '' })
+      await api.post('/workflow/atividades', {
+        nome: novaAtiv.nome,
+        fluxo_id: parseInt(novaAtiv.fluxo_id),
+        ordem: novaAtiv.ordem === '' ? 0 : parseInt(novaAtiv.ordem),
+        role_requerido: novaAtiv.role_requerido || null,
+      })
+      setNovaAtiv({ nome: '', fluxo_id: '', ordem: '', role_requerido: '' })
       await carregar(); flash('Atividade criada!')
+    } catch (err) {
+      flash(mensagemErro(err, 'Erro ao criar atividade'))
     } finally { setSalvando(false) }
   }
 
@@ -190,6 +197,19 @@ export default function AdminWorkflow() {
                   value={novaAtiv.nome}
                   onChange={e => setNovaAtiv(p => ({ ...p, nome: e.target.value }))}
                   onKeyDown={e => e.key === 'Enter' && criarAtiv()} />
+                <input className="form-control" type="number" placeholder="Ordem" style={{ maxWidth: 100 }}
+                  title="Define a sequência das atividades no fluxo"
+                  value={novaAtiv.ordem}
+                  onChange={e => setNovaAtiv(p => ({ ...p, ordem: e.target.value }))} />
+                <select className="form-control" style={{ maxWidth: 200 }}
+                  title="Papel exigido para aprovar/reprovar nesta atividade"
+                  value={novaAtiv.role_requerido}
+                  onChange={e => setNovaAtiv(p => ({ ...p, role_requerido: e.target.value }))}>
+                  <option value="">Qualquer usuário</option>
+                  <option value="user">Somente user</option>
+                  <option value="admin">Somente admin</option>
+                  <option value="dev">Somente dev</option>
+                </select>
                 <button
                   className={`btn btn-primary${salvando ? ' btn-loading' : ''}`}
                   onClick={criarAtiv}
@@ -200,16 +220,22 @@ export default function AdminWorkflow() {
               </div>
               <div className="table-wrap">
                 <table>
-                  <thead><tr><th>Fluxo</th><th>Atividade</th><th></th></tr></thead>
+                  <thead><tr><th>Fluxo</th><th>Ordem</th><th>Atividade</th><th>Quem pode aprovar</th><th></th></tr></thead>
                   <tbody>
                     {carregando
-                      ? <SkeletonRows cols={3} />
+                      ? <SkeletonRows cols={5} />
                       : atividades.length
                         ? fluxos.flatMap(f =>
                           (f.atividades || []).map(a => (
                             <tr key={a.id}>
                               <td><span className="badge badge-blue">Fluxo {f.numero}</span></td>
+                              <td className="text-sm text-muted">{a.ordem ?? 0}</td>
                               <td style={{ fontWeight: 500 }}>{a.nome}</td>
+                              <td className="text-sm">
+                                {a.role_requerido
+                                  ? <span className="badge badge-blue" style={{ fontSize: 11 }}>{a.role_requerido}</span>
+                                  : <span className="text-muted">qualquer usuário</span>}
+                              </td>
                               <td>
                                 <button
                                   className="btn btn-danger btn-sm"
@@ -221,7 +247,7 @@ export default function AdminWorkflow() {
                             </tr>
                           ))
                         )
-                        : <tr><td colSpan={3}><div className="empty-state" style={{ padding: 28 }}>Nenhuma atividade criada</div></td></tr>
+                        : <tr><td colSpan={5}><div className="empty-state" style={{ padding: 28 }}>Nenhuma atividade criada</div></td></tr>
                     }
                   </tbody>
                 </table>

@@ -1,22 +1,21 @@
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+
+import models
+import schemas
+from auth import hash_password, require_admin
 from database import get_db
-from auth import require_admin, hash_password
-import models, schemas
 
 router = APIRouter(prefix="/usuarios", tags=["usuarios"])
 
 
-def _u(u):
-    return {"id": u.id, "username": u.username, "email": u.email, "role": u.role, "is_active": u.is_active}
-
-
-@router.get("")
+@router.get("", response_model=list[schemas.UsuarioAdminOut])
 def listar(db: Session = Depends(get_db), _=Depends(require_admin)):
-    return [_u(u) for u in db.query(models.User).order_by(models.User.id).all()]
+    return db.query(models.User).order_by(models.User.id).all()
 
 
-@router.post("")
+@router.post("", response_model=schemas.UsuarioAdminOut, status_code=201)
 def criar(data: schemas.UsuarioCreate, db: Session = Depends(get_db), _=Depends(require_admin)):
     if db.query(models.User).filter(models.User.username == data.username).first():
         raise HTTPException(400, "Username já existe")
@@ -28,12 +27,15 @@ def criar(data: schemas.UsuarioCreate, db: Session = Depends(get_db), _=Depends(
         hashed_password=hash_password(data.password),
         role=data.role,
     )
-    db.add(user); db.commit(); db.refresh(user)
-    return _u(user)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
 
 
-@router.put("/{uid}")
-def atualizar(uid: int, data: schemas.UsuarioUpdate, db: Session = Depends(get_db), admin=Depends(require_admin)):
+@router.put("/{uid}", response_model=schemas.UsuarioAdminOut)
+def atualizar(uid: int, data: schemas.UsuarioUpdate, db: Session = Depends(get_db),
+              admin=Depends(require_admin)):
     user = db.query(models.User).filter(models.User.id == uid).first()
     if not user:
         raise HTTPException(404, "Usuário não encontrado")
@@ -44,15 +46,21 @@ def atualizar(uid: int, data: schemas.UsuarioUpdate, db: Session = Depends(get_d
     if data.is_active is not None:
         user.is_active = data.is_active
     db.commit()
-    return _u(user)
+    db.refresh(user)
+    return user
 
 
-@router.delete("/{uid}")
+@router.delete("/{uid}", response_model=schemas.OkOut)
 def deletar(uid: int, db: Session = Depends(get_db), admin=Depends(require_admin)):
     if uid == admin.id:
         raise HTTPException(400, "Não é possível deletar a própria conta")
     user = db.query(models.User).filter(models.User.id == uid).first()
     if not user:
         raise HTTPException(404, "Usuário não encontrado")
-    db.delete(user); db.commit()
+    if db.query(models.Documento).filter(models.Documento.responsavel_id == uid).first():
+        raise HTTPException(
+            400, "Usuário é responsável por documentos; desative a conta em vez de excluir"
+        )
+    db.delete(user)
+    db.commit()
     return {"ok": True}

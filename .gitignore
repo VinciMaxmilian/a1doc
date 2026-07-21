@@ -45,6 +45,13 @@ logs/
 *.db
 *.sqlite3
 
+# Testes / lint
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+coverage.xml
+
 # Celery runtime
 celerybeat-schedule*
 celerybeat.pid

@@ -1,26 +1,26 @@
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
+
+import models
+import schemas
+from auth import create_token, get_current_user, hash_password, require_admin, verify_password
 from database import get_db
-import models, schemas
-from auth import hash_password, verify_password, create_token, get_current_user, require_admin
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-def _user_dict(u):
-    return {"id": u.id, "username": u.username, "email": u.email, "role": u.role}
-
-
-@router.post("/login")
+@router.post("/login", response_model=schemas.TokenOut)
 def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.username == form.username).first()
     if not user or not verify_password(form.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Credenciais inválidas")
-    return {"access_token": create_token(user.id), "token_type": "bearer", "user": _user_dict(user)}
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Usuário inativo")
+    return {"access_token": create_token(user.id), "token_type": "bearer", "user": user}
 
 
-@router.post("/registrar")
+@router.post("/registrar", response_model=schemas.UsuarioOut, status_code=201)
 def registrar(data: schemas.UsuarioCreate, db: Session = Depends(get_db),
               _: models.User = Depends(require_admin)):
     """Criação de usuário restrita a Admin/Dev (evita escalação de privilégio)."""
@@ -30,12 +30,14 @@ def registrar(data: schemas.UsuarioCreate, db: Session = Depends(get_db),
         raise HTTPException(400, "Email já existe")
     user = models.User(
         username=data.username, email=data.email,
-        hashed_password=hash_password(data.password), role=data.role
+        hashed_password=hash_password(data.password), role=data.role,
     )
-    db.add(user); db.commit(); db.refresh(user)
-    return _user_dict(user)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
 
 
-@router.get("/me")
+@router.get("/me", response_model=schemas.UsuarioOut)
 def me(user: models.User = Depends(get_current_user)):
-    return _user_dict(user)
+    return user

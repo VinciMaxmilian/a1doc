@@ -1,7 +1,19 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, Text, DateTime, JSON, UniqueConstraint
-from sqlalchemy.orm import relationship
-from database import Base
 from datetime import datetime, timezone
+
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.orm import relationship
+
+from database import Base
 
 
 def utcnow() -> datetime:
@@ -72,7 +84,7 @@ class Fluxo(Base):
     descricao = Column(Text, nullable=True)
     atividades = relationship(
         "Atividade", back_populates="fluxo",
-        cascade="all, delete-orphan", order_by="Atividade.id"
+        cascade="all, delete-orphan", order_by="(Atividade.ordem, Atividade.id)"
     )
 
 
@@ -80,7 +92,11 @@ class Atividade(Base):
     __tablename__ = "atividades"
     id = Column(Integer, primary_key=True)
     nome = Column(String(200), nullable=False)
-    fluxo_id = Column(Integer, ForeignKey("fluxos.id"), nullable=False)
+    fluxo_id = Column(Integer, ForeignKey("fluxos.id"), nullable=False, index=True)
+    ordem = Column(Integer, default=0, nullable=False)
+    # Papel exigido para transitar a partir desta atividade.
+    # NULL = qualquer usuário autenticado. Admin/dev sempre podem.
+    role_requerido = Column(String(20), nullable=True)
     fluxo = relationship("Fluxo", back_populates="atividades")
     transicoes = relationship(
         "ConfigTransicao", foreign_keys="ConfigTransicao.atividade_origem_id",

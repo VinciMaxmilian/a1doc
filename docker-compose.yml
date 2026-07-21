@@ -1,33 +1,50 @@
+# Variáveis obrigatórias (sem default por segurança) — defina num .env na raiz:
+#   MYSQL_ROOT_PASSWORD, SECRET_KEY, ADMIN_PASSWORD
+# Gere a SECRET_KEY com:
+#   python -c "import secrets; print(secrets.token_urlsafe(48))"
+
+x-backend-env: &backend-env
+  DATABASE_URL: mysql+pymysql://root:${MYSQL_ROOT_PASSWORD:?defina MYSQL_ROOT_PASSWORD}@db:3306/${MYSQL_DATABASE:-indoc}
+  REDIS_URL: redis://redis:6379/0
+  UPLOAD_DIR: /data/uploads
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  # O schema é gerenciado pelo Alembic, não pelo create_all do startup.
+  AUTO_CREATE_TABLES: "false"
+
 services:
   db:
     image: mysql:8
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpass}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?defina MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-indoc}
-    ports:
-      - "3306:3306"
     volumes:
       - db_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_ROOT_PASSWORD:-rootpass}"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_ROOT_PASSWORD}"]
       interval: 5s
       timeout: 5s
       retries: 10
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   backend:
     build: ./backend
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn main:app --host 0.0.0.0 --port 8000"
     environment:
-      DATABASE_URL: mysql+pymysql://root:${MYSQL_ROOT_PASSWORD:-rootpass}@db:3306/${MYSQL_DATABASE:-indoc}
-      REDIS_URL: redis://redis:6379/0
-      SECRET_KEY: ${SECRET_KEY:-troque-em-producao}
+      <<: *backend-env
+      SECRET_KEY: ${SECRET_KEY:?defina SECRET_KEY}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
-      UPLOAD_DIR: /data/uploads
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@indoc.local}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?defina ADMIN_PASSWORD}
     volumes:
       - uploads:/data/uploads
     ports:
@@ -36,20 +53,20 @@ services:
       db:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
 
   worker:
     build: ./backend
     command: celery -A celery_app worker --loglevel=info --pool=solo
     environment:
-      DATABASE_URL: mysql+pymysql://root:${MYSQL_ROOT_PASSWORD:-rootpass}@db:3306/${MYSQL_DATABASE:-indoc}
-      REDIS_URL: redis://redis:6379/0
-      UPLOAD_DIR: /data/uploads
+      <<: *backend-env
     volumes:
       - uploads:/data/uploads
     depends_on:
-      - backend
-      - redis
+      backend:
+        condition: service_started
+      redis:
+        condition: service_healthy
 
   frontend:
     build: ./frontend

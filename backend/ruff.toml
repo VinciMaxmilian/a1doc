@@ -1,0 +1,15 @@
+# 120 acompanha o estilo já existente nos models/relationships.
+line-length = 120
+exclude = ["venv", ".venv", "migrations/versions"]
+
+[lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = [
+    # Filtros de query alinhados em uma linha são o estilo da base.
+    "E701",
+    "B008",  # Depends()/File() como default é o idioma do FastAPI
+]
+
+[lint.per-file-ignores]
+"tests/*" = ["E402"]  # conftest configura o ambiente antes dos imports
+"migrations/env.py" = ["E402"]

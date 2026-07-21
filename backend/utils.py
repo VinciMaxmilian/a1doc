@@ -9,19 +9,46 @@ ALLOWED_EXTENSIONS = {
     ".zip", ".rar", ".7z",
 }
 
+_INVALID_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+# Nomes reservados no Windows — um diretório com esses nomes é inutilizável.
+_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
+
+def _sanitize_component(s: str, fallback: str, maxlen: int) -> str:
+    """Base comum de slugify/safe_filename: remove chars inválidos e nomes perigosos."""
+    s = _INVALID_CHARS.sub("", s).strip()
+    # '.' e '..' escapariam da árvore de uploads; pontos finais quebram no Windows.
+    s = s.rstrip(". ")
+    if not s or set(s) == {"."} or s.upper() in _RESERVED_NAMES:
+        return fallback
+    return s[:maxlen].rstrip(". ") or fallback
+
 
 def slugify(s: str) -> str:
-    """Remove chars inválidos para nome de pasta (Windows-safe). Mantém espaços."""
-    s = re.sub(r'[<>:"/\\|?*\n\r\t]', '', s.strip())
-    return s[:80]
+    """Sanitiza um componente de caminho (nome de pasta). Mantém espaços.
+
+    Garante que o resultado nunca seja '', '.', '..' ou nome reservado do
+    Windows — qualquer um deles permitiria escrever fora de UPLOAD_DIR.
+    """
+    return _sanitize_component(s, fallback="_", maxlen=80)
 
 
 def safe_filename(name: str) -> str:
     """Sanitiza nome de arquivo: remove path (anti-traversal) e chars inválidos."""
     # descarta qualquer componente de diretório (../, C:\, etc.)
     name = os.path.basename(name.replace("\\", "/"))
-    name = re.sub(r'[<>:"/\\|?*\n\r\t]', "_", name).strip().strip(".")
-    return name[:200] or "arquivo"
+    name = _INVALID_CHARS.sub("_", name).strip()
+    stem, dot, suffix = name.rpartition(".")
+    # Só trata como extensão se sobrar nome e sufixo de verdade ("..." não conta).
+    if dot and stem.strip(". ") and suffix.strip():
+        stem = _sanitize_component(stem, fallback="arquivo", maxlen=180)
+        return f"{stem}.{suffix[:20]}"
+    return _sanitize_component(name, fallback="arquivo", maxlen=200)
 
 
 def extension_allowed(name: str) -> bool:
@@ -29,17 +56,30 @@ def extension_allowed(name: str) -> bool:
 
 
 def unique_path(directory: Path, filename: str) -> Path:
-    """Evita sobrescrever: se existir, acrescenta ' (1)', ' (2)'..."""
-    candidate = directory / filename
-    if not candidate.exists():
-        return candidate
+    """Reserva um caminho livre no diretório, criando o arquivo vazio (atômico).
+
+    Cria o arquivo com O_EXCL para que duas chamadas concorrentes nunca
+    devolvam o mesmo caminho. Se existir, acrescenta ' (1)', ' (2)'...
+    """
     stem, suffix = Path(filename).stem, Path(filename).suffix
-    i = 1
+    i = 0
     while True:
-        candidate = directory / f"{stem} ({i}){suffix}"
-        if not candidate.exists():
-            return candidate
-        i += 1
+        candidate = directory / (filename if i == 0 else f"{stem} ({i}){suffix}")
+        try:
+            fd = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            i += 1
+            continue
+        os.close(fd)
+        return candidate
+
+
+def ensure_within(base: Path, target: Path) -> Path:
+    """Valida que `target` está dentro de `base`. Levanta ValueError se escapar."""
+    base_r, target_r = base.resolve(), target.resolve()
+    if base_r != target_r and base_r not in target_r.parents:
+        raise ValueError(f"caminho fora do diretório permitido: {target}")
+    return target_r
 
 
 def doc_rev_dir(upload_dir: Path, amb: str, area: str, proj: str, doc_nome: str, rev_label: str) -> Path:
@@ -53,7 +93,8 @@ def doc_rev_dir(upload_dir: Path, amb: str, area: str, proj: str, doc_nome: str,
         / slugify(area)
         / slugify(proj)
         / slugify(doc_nome)
-        / f"Rev {rev_label}"
+        / f"Rev {slugify(rev_label)}"
     )
+    ensure_within(upload_dir, path)
     path.mkdir(parents=True, exist_ok=True)
     return path

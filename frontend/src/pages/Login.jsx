@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
-import api from '../api'
+import api, { mensagemErro } from '../api'
 
 export default function Login() {
   const { login } = useAuth()
@@ -23,7 +23,7 @@ export default function Login() {
       login(res.data.user, res.data.access_token)
       navigate('/documentos')
     } catch (err) {
-      setErro(err.response?.data?.detail || 'Credenciais inválidas')
+      setErro(mensagemErro(err, 'Credenciais inválidas'))
     } finally {
       setLoading(false)
     }

@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import Layout from '../components/Layout'
 import ConfirmModal from '../components/ConfirmModal'
 import { useAuth } from '../contexts/AuthContext'
-import api from '../api'
+import api, { mensagemErro } from '../api'
 
 const ROLES = ['user', 'admin', 'dev']
 
@@ -42,7 +42,7 @@ export default function AdminUsuarios() {
       await carregar()
       flash('success', `Usuário "${form.username}" criado!`)
     } catch (err) {
-      flash('error', err.response?.data?.detail || 'Erro ao criar usuário')
+      flash('error', mensagemErro(err, 'Erro ao criar usuário'))
     } finally { setSalvando(false) }
   }
 
@@ -53,7 +53,7 @@ export default function AdminUsuarios() {
       await carregar()
       flash('success', 'Usuário atualizado.')
     } catch (err) {
-      flash('error', err.response?.data?.detail || 'Erro ao atualizar')
+      flash('error', mensagemErro(err, 'Erro ao atualizar'))
     }
   }
 
@@ -64,7 +64,7 @@ export default function AdminUsuarios() {
       await carregar()
       flash('success', `Usuário "${confirmDel.username}" removido.`)
     } catch (err) {
-      flash('error', err.response?.data?.detail || 'Erro ao excluir')
+      flash('error', mensagemErro(err, 'Erro ao excluir'))
     } finally { setDeletando(false); setConfirmDel(null) }
   }
 

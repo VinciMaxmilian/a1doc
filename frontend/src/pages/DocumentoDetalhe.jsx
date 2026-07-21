@@ -4,7 +4,7 @@ import Layout from '../components/Layout'
 import GlassTabs from '../components/GlassTabs'
 import Modal from '../components/Modal'
 import { useAuth } from '../contexts/AuthContext'
-import api from '../api'
+import api, { baixarArquivo, mensagemErro } from '../api'
 
 const ABAS = [
   { key: 'arquivos',   label: 'Arquivos',            icon: '📎' },
@@ -34,8 +34,20 @@ export default function DocumentoDetalhe() {
   const [uploading, setUploading] = useState(false)
 
   const [msg, setMsg] = useState({ tipo: '', texto: '' })
+  const [baixandoId, setBaixandoId] = useState(null)
 
   useEffect(() => { carregar() }, [id])
+
+  async function baixar(arquivo) {
+    setBaixandoId(arquivo.id)
+    try {
+      await baixarArquivo(arquivo.id, arquivo.arquivo_nome)
+    } catch (err) {
+      flash('erro', mensagemErro(err, 'Falha ao baixar o arquivo'))
+    } finally {
+      setBaixandoId(null)
+    }
+  }
 
   async function carregar() {
     setLoading(true)
@@ -64,7 +76,7 @@ export default function DocumentoDetalhe() {
       flash('success', 'Campos salvos!')
       carregar()
     } catch (err) {
-      flash('error', err.response?.data?.detail || 'Erro ao salvar')
+      flash('error', mensagemErro(err, 'Erro ao salvar'))
     } finally { setSalvandoCampos(false) }
   }
 
@@ -83,7 +95,7 @@ export default function DocumentoDetalhe() {
       setObsUpload('')
       flash('success', `Arquivo Rev ${res.data.revisao_label} enviado!`)
     } catch (err) {
-      flash('error', err.response?.data?.detail || 'Erro no upload')
+      flash('error', mensagemErro(err, 'Erro no upload'))
     } finally { setUploading(false) }
   }
 
@@ -231,10 +243,11 @@ export default function DocumentoDetalhe() {
                           {new Date(a.created_at).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}
                         </td>
                         <td>
-                          <a href={`/uploads/${a.arquivo_path}`} target="_blank" rel="noreferrer"
+                          <button type="button" onClick={() => baixar(a)}
+                            disabled={baixandoId === a.id}
                             className="btn btn-secondary btn-sm">
-                            ↓ Baixar
-                          </a>
+                            {baixandoId === a.id ? '…' : '↓ Baixar'}
+                          </button>
                         </td>
                       </tr>
                     ))

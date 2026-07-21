@@ -2,17 +2,20 @@
 
 Sistema de Gestão Eletrônica de Documentos (GED) com workflow configurável.
 
+> Atualizado em 2026-07-21, após a rodada de hardening descrita abaixo.
+
 ## Stack
 
 | Camada | Tecnologia |
 |--------|-----------|
 | Backend | FastAPI + SQLAlchemy 2.0 |
 | Banco | MySQL (PyMySQL) |
+| Migrations | Alembic |
 | Fila assíncrona | Celery + Redis |
-| Auth | JWT (python-jose) + bcrypt |
+| Auth | JWT (PyJWT) + bcrypt |
 | Frontend | React 18 + Vite + React Router + Axios |
 
-## Arquitetura (visão geral)
+## Arquitetura
 
 ```
 Ambiente → Área → Projeto → Documento → Arquivos (revisões)
@@ -22,65 +25,63 @@ Ambiente → Área → Projeto → Documento → Arquivos (revisões)
 Fluxo → Atividade → ConfigTransição (origem + ação → destino)
 ```
 
-- Upload processado assíncrono via Celery (`tasks.processar_upload`).
-- Workflow por transições configuráveis; ação `aprovado`/`reprovado` move documento entre atividades, opcionalmente gerando nova revisão.
-- Auto-migração de colunas no startup (`migrate_db` faz `ALTER TABLE` detectando colunas novas).
-- Papéis: `dev`, `admin`, `user`.
+- Upload processado em background via Celery (`tasks.processar_upload`).
+- Workflow por transições configuráveis; `aprovado`/`reprovado` movem o documento entre atividades, opcionalmente gerando nova revisão.
+- Papéis: `dev`, `admin`, `user`. Autorização de workflow por `Atividade.role_requerido`.
 
 ---
 
-## O que dá para melhorar
+## Correções aplicadas
 
-### 🔴 Segurança (prioridade alta)
+### Segurança
 
-1. **CORS liberado total** — `main.py` usa `allow_origins=["*"]` com `allow_credentials=True`. Combinação inválida/insegura. Restringir a origens conhecidas.
-2. **`SECRET_KEY` fraca e versionada por padrão** — default `"change-me"` e `.env` real com chave previsível (`a1doc-secret-key-2026-...`). Gerar chave forte aleatória; garantir que `.env` nunca vá pro git (já está no `.gitignore`, ok — mas conferir histórico).
-3. **Credenciais reais no `.env`** — senha de banco em texto no repositório de trabalho. Confirmar que nunca foi commitado (`git log --all -- backend/.env`).
-4. **Usuário admin padrão hardcoded** — `admin / admin123` criado no startup. Forçar troca no primeiro login ou criar via seed controlado.
-5. **`/auth/registrar` aberto** — qualquer um registra usuário e **escolhe o próprio `role`** (inclusive `admin`/`dev`). Escalação de privilégio trivial. Remover endpoint ou travar role para `user` e exigir admin.
-6. **Upload sem validação de tipo/nome** — aceita qualquer extensão; `arquivo.filename` usado direto no path. Risco de path traversal (`../`) e upload de executáveis. Sanitizar filename (já existe `slugify`, mas não aplicado ao nome do arquivo salvo) e validar extensões permitidas.
-7. **Permissões de escrita em documentos** — `transitar` e `upload-revisao` só exigem usuário logado, sem checar se é responsável/autorizado pela atividade.
+1. **`/uploads` era público** — `StaticFiles` servia todos os documentos sem token, em caminhos previsíveis (`Ambiente/Área/Projeto/Documento/Rev N/`). Removido. O download agora passa por `GET /documentos/arquivos/{id}/download`, autenticado, e o caminho físico não é mais devolvido pela API.
+2. **Workflow sem autorização** — `transitar` e `upload-revisao` exigiam apenas estar logado. Adicionado `Atividade.role_requerido`: vazio = qualquer autenticado, preenchido = só aquele papel; admin/dev sempre podem; o responsável sempre envia revisão.
+3. **`docker-compose` reintroduzia senhas padrão** — `ADMIN_PASSWORD=admin123` e `SECRET_KEY=troque-em-producao` como defaults desfaziam o hardening do `main.py`. Agora são obrigatórias (`${VAR:?}`). As portas de MySQL e Redis deixaram de ser publicadas no host.
+4. **Path traversal via `slugify`** — `slugify("..")` devolvia `..`, e o nome do documento é controlado pelo usuário: o arquivo era gravado acima de `UPLOAD_DIR`. Sanitização reforçada (`.`, `..`, nomes reservados do Windows) + `ensure_within()` validando o resultado.
+5. **`nginx` sem `client_max_body_size`** — o default de 1 MB rejeitava uploads muito antes do limite de 100 MB da API.
 
-### 🟠 Robustez / Correção
+### Correção
 
-8. **`@app.on_event("startup")` deprecado** — FastAPI recomenda `lifespan`. Migrar.
-9. **`datetime.utcnow()` deprecado** (Python 3.12+) — usar `datetime.now(timezone.utc)`.
-10. **Auto-migração frágil** — `migrate_db` só adiciona colunas; não trata renomeações, tipos alterados, índices, drops. Silencia erros com `print`. Migrar para **Alembic**.
-11. **Lógica de reenvio em `tasks.py` ambígua** — no upsert, se não há transição configurada faz fallback "próxima atividade por ID". Depende de ordem de ID, quebra se atividades forem recriadas. Documentar/refatorar regra de negócio.
-12. **`upload-revisao` usa `shutil.copyfileobj` síncrono** dentro de rota `async` — bloqueia event loop. Ler em chunks ou rodar em threadpool.
-13. **Sem tratamento de arquivo duplicado no mesmo dir** — dois uploads com mesmo filename na mesma revisão sobrescrevem silenciosamente.
-14. **`Documento` sem índice em campos de filtro** — `nome`, `projeto_id` etc. usados em queries/upsert sem índice. Adicionar índices.
+6. **Arquivos de mesmo nome no mesmo envio** — o segundo sobrescrevia o primeiro na área temporária e o job morria no `shutil.move`. `unique_path()` agora reserva o caminho atomicamente (`O_EXCL`) e é usado também no tmp.
+7. **`UPLOAD_DIR` com defaults divergentes** — `C:/A1Doc/files` no worker e `./uploads` na API. Toda leitura de env passou para `config.py`.
+8. **Reenvio dependia da ordem dos IDs** — o fallback "próxima atividade por id" quebrava se as atividades fossem recriadas, e a busca de transição nem filtrava por ação (num nó com `aprovado` e `reprovado` pegava um dos dois de forma indeterminada). Agora usa exclusivamente a transição `aprovado`; sem ela, o documento fica onde está e o motivo vai para o log.
+9. **Fluxo 0 ausente falhava em silêncio** — documento nascia sem atividade e sem histórico. Agora o job termina em `erro` com mensagem explícita.
+10. **`atualizar_campos` aceitava `campo_id` de outro tipo de documento** — gravava valores órfãos. Passou a validar contra o tipo do documento.
+11. **Exclusões estouravam 500** — apagar ambiente/área/projeto/tipo/atividade/fluxo com documentos ligados violava FK `NOT NULL`. Agora retorna 400 com mensagem.
+12. **Datas sem fuso** — gravadas em UTC e serializadas sem offset, o `new Date()` do navegador as lia como hora local. Passaram a sair com `+00:00`.
+13. **`limit` sem teto** — `?limit=1000000` era aceito. Limitado a 100.
+14. **Ordem das atividades** — `Atividade.ordem` explícita, em vez da ordenação implícita por `id`.
+15. **Temporários vazavam em caso de erro** — a limpeza do `tmp/` foi para o `finally`.
 
-### 🟡 Qualidade de código
+### Estrutura
 
-15. **Serialização manual repetida** — funções `_doc_base`, `_ativ`, `_u`, `_fluxo` montam dicts à mão. Usar `response_model` Pydantic (schemas de saída) → menos bug, doc automática.
-16. **Schemas de saída ausentes** — só há schemas de entrada. Respostas não tipadas.
-17. **`print()` para log** — trocar por `logging` estruturado.
-18. **Sem testes** — nenhum teste automatizado. Adicionar pytest (auth, workflow, upload).
-19. **Validação de e-mail fraca** — `email: str`. Usar `EmailStr` do Pydantic.
-20. **`config_transicoes` sem validação de ação** — `acao` é string livre; restringir a enum (`aprovado`/`reprovado`).
+16. **Alembic** substituiu o `migrate_db()` que só adicionava colunas e engolia erros em log. `alembic check` roda na CI e garante que models e migrations não divergem.
+17. **`response_model` em todos os endpoints** — as ~15 funções que montavam dicts à mão foram substituídas por schemas de saída. OpenAPI passou a refletir a API de verdade.
+18. **97 testes (pytest)** cobrindo auth, hierarquia, workflow, upload, download, autorização e sanitização de caminhos. Rodam em SQLite, sem MySQL nem Redis.
+19. **CI (GitHub Actions)** — ruff + pytest + `alembic check` + build do frontend.
+20. **`requirements.txt` pinado**; `python-jose` (sem manutenção, usa `utcnow()` deprecado) trocado por `PyJWT`.
+21. **`logging` no lugar de `print()`**, com nível configurável por `LOG_LEVEL`.
+22. **Validação de entrada** — `EmailStr`, senha mínima de 8 caracteres, `Literal` para papéis/ações/tipos de campo, verificação de consistência da hierarquia no upload.
 
-### 🟢 Frontend
+### Frontend
 
-21. **Token em `localStorage`** — vulnerável a XSS. Considerar cookie httpOnly (exige mudança no fluxo auth).
-22. **Redirect via `window.location.href`** no interceptor 401 — perde estado SPA. Usar navegação do router.
-23. **`index.css` monolítico (799 linhas)** — considerar CSS modules ou dividir por componente.
-24. **Sem tratamento de estado de erro/loading global** — verificar cobertura nas páginas.
-
-### ⚙️ DevOps / Infra
-
-25. **`celerybeat-schedule*` versionados** — arquivos binários de runtime no git. Adicionar ao `.gitignore` e remover do tracking.
-26. **`venv/` commitado** — não deve estar no repo (conferir; `.gitignore` cobre `backend/venv/`, mas há arquivos rastreados? validar `git ls-files`).
-27. **Sem Dockerfile / docker-compose** — subir MySQL + Redis + backend + worker manualmente via `.bat`. Compose simplificaria muito.
-28. **Sem CI** — adicionar pipeline (lint + testes).
-29. **`requirements.txt` com `>=` aberto** — sem lock. Usar versões fixas ou `pip-tools`/`poetry`.
-30. **Sem README** — falta doc de setup/execução.
+23. **Download autenticado** via blob, em vez de link direto para `/uploads`.
+24. **Redirect de 401 pelo router**, não mais `window.location.href` (que recarregava a página e descartava o estado do SPA).
+25. **Erros 422 não quebram mais a tela** — o `detail` do FastAPI vira array de objetos na validação; `mensagemErro()` normaliza.
+26. **UI de `ordem` e `role_requerido`** na tela de atividades.
 
 ---
 
-## Prioridade sugerida
+## Pendências conhecidas
 
-1. Fechar buracos de segurança 1–7 (crítico).
-2. Alembic + remover auto-migração (10, 25).
-3. `response_model` Pydantic + testes (15–18).
-4. Docker Compose + README (27, 30).
+| # | Item | Nota |
+|---|------|------|
+| 1 | **Token em `localStorage`** | Vulnerável a XSS. Migrar para cookie `httpOnly` exige repensar o fluxo de auth (CSRF, refresh token). Mudança de arquitetura, não um patch. |
+| 2 | **Sem controle de acesso por documento** | Todo usuário autenticado lê todos os documentos. Se houver requisito de confidencialidade por ambiente/área, precisa de modelo de permissão. |
+| 3 | **`index.css` monolítico (799 linhas)** | Dividir por componente ou adotar CSS modules. |
+| 4 | **Bundle de 568 kB** | Code-splitting por rota. |
+| 5 | **Renomear ambiente/área/projeto** | Não move os arquivos já gravados. Os antigos continuam acessíveis (o caminho está no banco), mas a árvore no disco fica inconsistente. |
+| 6 | **Sem teste de frontend** | Só o build roda na CI. |
+| 7 | **Sem rate limiting no login** | Força bruta não tem freio. |
+| 8 | **Worker com `--pool=solo`** | Um upload por vez. Suficiente hoje; revisar se o volume crescer. |
