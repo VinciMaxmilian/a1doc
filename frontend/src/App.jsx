@@ -7,6 +7,7 @@ import DocumentoDetalhe from './pages/DocumentoDetalhe'
 import AdminHierarquia from './pages/AdminHierarquia'
 import AdminWorkflow from './pages/AdminWorkflow'
 import AdminUsuarios from './pages/AdminUsuarios'
+import AdminPermissoes from './pages/AdminPermissoes'
 
 export default function App() {
   return (
@@ -19,6 +20,7 @@ export default function App() {
       <Route path="/admin/hierarquia" element={<PrivateRoute adminOnly><AdminHierarquia /></PrivateRoute>} />
       <Route path="/admin/workflow" element={<PrivateRoute adminOnly><AdminWorkflow /></PrivateRoute>} />
       <Route path="/admin/usuarios" element={<PrivateRoute adminOnly><AdminUsuarios /></PrivateRoute>} />
+      <Route path="/admin/permissoes" element={<PrivateRoute adminOnly><AdminPermissoes /></PrivateRoute>} />
     </Routes>
   )
 }

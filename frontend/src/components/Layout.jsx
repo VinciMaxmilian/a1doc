@@ -51,6 +51,12 @@ export default function Layout({ children }) {
               >
                 <span>👤</span> Usuários
               </NavLink>
+              <NavLink
+                to="/admin/permissoes"
+                className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
+              >
+                <span>🔐</span> Permissões
+              </NavLink>
             </>
           )}
         </nav>
