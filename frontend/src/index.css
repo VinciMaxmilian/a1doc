@@ -797,3 +797,44 @@ tr.skeleton td { padding: 14px 12px; }
   .filter-bar { flex-direction: column; }
   .filter-item { max-width: none; }
 }
+
+/* ── Auditoria e permissões (FASES 1–3) ─────────────────────────────── */
+
+.perm-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 6px 14px;
+  margin: 12px 0;
+}
+.perm-check { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px; padding: 3px 10px; font-size: 12px;
+}
+.chip button { background: none; border: none; cursor: pointer; color: inherit; opacity: .6; }
+.chip button:hover { opacity: 1; }
+
+.detalhe-grid {
+  display: grid; grid-template-columns: 150px 1fr;
+  gap: 6px 16px; margin: 0 0 16px; font-size: 13px;
+}
+.detalhe-grid dt { opacity: .65; }
+.detalhe-grid dd { margin: 0; }
+.quebra { word-break: break-all; }
+
+.json-box {
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px; padding: 12px;
+  font-size: 12px; line-height: 1.5;
+  overflow-x: auto; max-height: 260px;
+}
+
+.pagination { display: flex; gap: 8px; margin-top: 16px; }
+.subrow { background: rgba(255, 255, 255, 0.03); }
+.card-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.spacer { flex: 1; }

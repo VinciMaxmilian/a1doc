@@ -5,8 +5,8 @@ export default function Layout({ children }) {
   const { user, logout, isAdmin } = useAuth()
   const navigate = useNavigate()
 
-  function handleLogout() {
-    logout()
+  async function handleLogout() {
+    await logout()
     navigate('/login')
   }
 
@@ -28,6 +28,12 @@ export default function Layout({ children }) {
             className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
           >
             <span>⬆️</span> Novo Upload
+          </NavLink>
+          <NavLink
+            to="/sessoes"
+            className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
+          >
+            <span>🖥️</span> Minhas sessões
           </NavLink>
 
           {isAdmin && (
@@ -56,6 +62,12 @@ export default function Layout({ children }) {
                 className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
               >
                 <span>🔐</span> Permissões
+              </NavLink>
+              <NavLink
+                to="/admin/auditoria"
+                className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
+              >
+                <span>📋</span> Auditoria
               </NavLink>
             </>
           )}

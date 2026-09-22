@@ -20,6 +20,7 @@ os.environ["SECRET_KEY"] = "chave-de-teste-nao-usar-em-producao"
 os.environ["ADMIN_PASSWORD"] = ""          # sem seed automático
 os.environ["AUTO_CREATE_TABLES"] = "false"  # as fixtures controlam o schema
 os.environ["MAX_UPLOAD_MB"] = "1"
+os.environ["COOKIE_SECURE"] = "false"   # TestClient fala http
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -89,6 +90,17 @@ def token_de(client, username, senha="senha-forte-123"):
 
 def auth(token):
     return {"Authorization": f"Bearer {token}"}
+
+
+def sem_sessao(client):
+    """Descarta os cookies do TestClient.
+
+    Depois da FASE 2 o login deixa cookies de sessão no cliente, então omitir
+    o header `Authorization` não basta para simular alguém não autenticado —
+    o cookie ainda autenticaria. Isto é o cliente anônimo de verdade.
+    """
+    client.cookies.clear()
+    return client
 
 
 @pytest.fixture

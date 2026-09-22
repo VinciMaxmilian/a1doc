@@ -4,7 +4,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import and_, desc, false, or_
 from sqlalchemy.orm import Session, joinedload
@@ -14,6 +14,9 @@ import models
 import schemas
 from auth import get_current_user, is_admin
 from database import get_db
+from indoc.audit.actions import Action
+from indoc.audit.service import registrar
+from indoc.auth.deps import get_session_id
 from indoc.permissions.constants import Permission
 from indoc.permissions.deps import get_permissions
 from indoc.permissions.service import PermissionService
@@ -182,6 +185,7 @@ async def upload(
     tipo_documento_id: int = Form(...),
     arquivos: list[UploadFile] = File(...),
     observacao: str = Form(None),
+    request: Request = None,
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
     perms: PermissionService = Depends(get_permissions),
@@ -212,6 +216,13 @@ async def upload(
 
     db.add(models.UploadJob(id=job_id, status="pendente"))
     db.commit()
+
+    registrar(
+        db, Action.UPLOAD, user=user, session_id=get_session_id(request),
+        entity_type="upload_job", project_id=projeto_id,
+        metadata={"job_id": job_id, "nome": nome.strip(),
+                  "arquivos": [a["filename"] for a in arquivos_info]},
+    )
 
     from tasks import processar_upload
     processar_upload.delay(
@@ -266,7 +277,7 @@ def status_job(job_id: str, db: Session = Depends(get_db), _=Depends(get_current
 
 
 @router.get("/arquivos/{arquivo_id}/download")
-def baixar_arquivo(arquivo_id: int, db: Session = Depends(get_db),
+def baixar_arquivo(arquivo_id: int, request: Request, db: Session = Depends(get_db),
                    perms: PermissionService = Depends(get_permissions)):
     """Download autorizado. Os arquivos não são servidos como estáticos
     públicos — o caminho no disco nunca é exposto ao cliente."""
@@ -290,6 +301,12 @@ def baixar_arquivo(arquivo_id: int, db: Session = Depends(get_db),
     if not caminho.is_file():
         raise HTTPException(404, "Arquivo não encontrado no armazenamento")
 
+    registrar(
+        db, Action.DOWNLOAD, user=perms.user, session_id=get_session_id(request),
+        entity_type="documento_arquivo", entity_id=arq.id,
+        document_id=arq.documento_id,
+        metadata={"arquivo": arq.arquivo_nome, "revisao_indice": arq.revisao_indice},
+    )
     return FileResponse(caminho, filename=arq.arquivo_nome,
                         media_type="application/octet-stream")
 
@@ -299,6 +316,7 @@ async def upload_revisao(
     doc_id: int,
     arquivo: UploadFile = File(...),
     observacao: str = Form(None),
+    request: Request = None,
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
     perms: PermissionService = Depends(get_permissions),
@@ -331,18 +349,32 @@ async def upload_revisao(
         observacao=observacao or None,
     ))
     db.commit()
+
+    registrar(
+        db, Action.REVISAO, user=user, session_id=get_session_id(request),
+        entity_type="documento", entity_id=doc.id,
+        project_id=doc.projeto_id, document_id=doc.id,
+        metadata={"arquivo": final_path.name, "revisao_indice": doc.revisao_indice,
+                  "observacao": observacao or None},
+    )
     return _detalhe(_load_ou_404(doc_id, db), db)
 
 
 @router.get("/{doc_id}", response_model=schemas.DocumentoDetalheOut)
-def detalhe(doc_id: int, db: Session = Depends(get_db),
+def detalhe(doc_id: int, request: Request, db: Session = Depends(get_db),
             perms: PermissionService = Depends(get_permissions)):
     perms.exigir(Permission.READ, rec_documento(doc_id))
-    return _detalhe(_load_ou_404(doc_id, db), db)
+    doc = _load_ou_404(doc_id, db)
+    registrar(
+        db, Action.VISUALIZACAO, user=perms.user, session_id=get_session_id(request),
+        entity_type="documento", entity_id=doc.id,
+        project_id=doc.projeto_id, document_id=doc.id,
+    )
+    return _detalhe(doc, db)
 
 
 @router.put("/{doc_id}/campos", response_model=schemas.OkOut)
-def atualizar_campos(doc_id: int, data: schemas.CamposUpdate,
+def atualizar_campos(doc_id: int, data: schemas.CamposUpdate, request: Request,
                      db: Session = Depends(get_db),
                      perms: PermissionService = Depends(get_permissions)):
     perms.exigir(Permission.MANAGE_METADATA, rec_documento(doc_id))
@@ -368,6 +400,7 @@ def atualizar_campos(doc_id: int, data: schemas.CamposUpdate,
             models.ValorCampo.documento_id == doc_id
         ).all()
     }
+    antes = {cid: v.valor for cid, v in existentes.items()}
     for item in data.valores:
         if item.campo_id in existentes:
             existentes[item.campo_id].valor = item.valor
@@ -376,11 +409,19 @@ def atualizar_campos(doc_id: int, data: schemas.CamposUpdate,
                 documento_id=doc_id, campo_id=item.campo_id, valor=item.valor
             ))
     db.commit()
+
+    registrar(
+        db, Action.ALTERACAO_METADATA, user=perms.user, session_id=get_session_id(request),
+        entity_type="documento", entity_id=doc.id,
+        project_id=doc.projeto_id, document_id=doc.id,
+        before=antes,
+        after={i.campo_id: i.valor for i in data.valores},
+    )
     return {"ok": True}
 
 
 @router.post("/{doc_id}/transitar", response_model=schemas.DocumentoDetalheOut)
-def transitar(doc_id: int, req: schemas.TransicaoRequest,
+def transitar(doc_id: int, req: schemas.TransicaoRequest, request: Request,
               db: Session = Depends(get_db), user: models.User = Depends(get_current_user),
               perms: PermissionService = Depends(get_permissions)):
     doc = _load_ou_404(doc_id, db)
@@ -404,8 +445,21 @@ def transitar(doc_id: int, req: schemas.TransicaoRequest,
         atividade_destino_id=trans.atividade_destino_id,
         acao=req.acao, user_id=user.id, observacao=req.observacao,
     ))
+    origem_id = doc.atividade_atual_id
     if trans.gera_nova_revisao:
         doc.revisao_indice += 1
     doc.atividade_atual_id = trans.atividade_destino_id
     db.commit()
+
+    registrar(
+        db,
+        Action.APROVACAO if req.acao == "aprovado" else Action.REPROVACAO,
+        user=user, session_id=get_session_id(request),
+        entity_type="documento", entity_id=doc.id,
+        project_id=doc.projeto_id, document_id=doc.id,
+        before={"atividade_atual_id": origem_id},
+        after={"atividade_atual_id": trans.atividade_destino_id,
+               "revisao_indice": doc.revisao_indice},
+        metadata={"acao": req.acao, "observacao": req.observacao},
+    )
     return _detalhe(_load_ou_404(doc_id, db), db)

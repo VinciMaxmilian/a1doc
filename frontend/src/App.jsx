@@ -8,6 +8,8 @@ import AdminHierarquia from './pages/AdminHierarquia'
 import AdminWorkflow from './pages/AdminWorkflow'
 import AdminUsuarios from './pages/AdminUsuarios'
 import AdminPermissoes from './pages/AdminPermissoes'
+import AdminAuditoria from './pages/AdminAuditoria'
+import MinhasSessoes from './pages/MinhasSessoes'
 
 export default function App() {
   return (
@@ -21,6 +23,8 @@ export default function App() {
       <Route path="/admin/workflow" element={<PrivateRoute adminOnly><AdminWorkflow /></PrivateRoute>} />
       <Route path="/admin/usuarios" element={<PrivateRoute adminOnly><AdminUsuarios /></PrivateRoute>} />
       <Route path="/admin/permissoes" element={<PrivateRoute adminOnly><AdminPermissoes /></PrivateRoute>} />
+      <Route path="/admin/auditoria" element={<PrivateRoute adminOnly><AdminAuditoria /></PrivateRoute>} />
+      <Route path="/sessoes" element={<PrivateRoute><MinhasSessoes /></PrivateRoute>} />
     </Routes>
   )
 }

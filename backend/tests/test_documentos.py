@@ -1,5 +1,5 @@
 import pytest
-from conftest import auth, criar_usuario, enviar_documento, token_de
+from conftest import auth, criar_usuario, enviar_documento, sem_sessao, token_de
 
 # ────────────────────────── upload ──────────────────────────
 
@@ -12,8 +12,8 @@ def test_upload_cria_documento_na_atividade_inicial(documento, fluxo_inicial):
 
 
 def test_upload_exige_autenticacao(client, hierarquia):
-    r = client.post("/documentos/upload", data={**hierarquia, "nome": "X"},
-                    files=[("arquivos", ("a.pdf", b"x", "application/pdf"))])
+    r = sem_sessao(client).post("/documentos/upload", data={**hierarquia, "nome": "X"},
+                                files=[("arquivos", ("a.pdf", b"x", "application/pdf"))])
     assert r.status_code == 401
 
 
@@ -113,7 +113,9 @@ def test_reenvio_sem_transicao_mantem_atividade(client, h_admin, h_comum,
 
 def test_download_exige_autenticacao(client, documento):
     arq_id = documento["arquivos"][0]["id"]
-    assert client.get(f"/documentos/arquivos/{arq_id}/download").status_code == 401
+    assert sem_sessao(client).get(
+        f"/documentos/arquivos/{arq_id}/download"
+    ).status_code == 401
 
 
 def test_download_autenticado_devolve_o_conteudo(client, h_comum, documento):

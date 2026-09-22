@@ -14,6 +14,8 @@ from sqlalchemy.orm import Session
 
 import schemas as schemas_legado
 from database import get_db
+from indoc.audit.actions import Action
+from indoc.audit.service import registrar
 from indoc.permissions import schemas as sch
 from indoc.permissions.constants import Permission, ResourceType
 from indoc.permissions.deps import exige_admin, get_permissions
@@ -126,6 +128,8 @@ def criar_grupo(data: sch.GrupoCreate, db: Session = Depends(get_db),
     db.add(g)
     db.commit()
     db.refresh(g)
+    registrar(db, Action.CRIACAO, user=_.user, entity_type="grupo", entity_id=g.id,
+              after={"nome": g.nome, "descricao": g.descricao})
     return {"id": g.id, "nome": g.nome, "descricao": g.descricao,
             "ativo": g.ativo, "total_membros": 0}
 
@@ -159,6 +163,9 @@ def deletar_grupo(grupo_id: int, db: Session = Depends(get_db),
     g = db.query(Grupo).filter(Grupo.id == grupo_id).first()
     if not g:
         raise HTTPException(404, "Grupo não encontrado")
+    # Lido antes do delete: depois do commit o objeto está expurgado da sessão
+    # e acessar o atributo levantaria.
+    antes = {"nome": g.nome, "descricao": g.descricao}
     # As ACLs que citam o grupo ficariam órfãs e voltariam a valer se um grupo
     # novo reaproveitasse o id. Removidas junto.
     db.query(ACLEntry).filter(
@@ -166,6 +173,8 @@ def deletar_grupo(grupo_id: int, db: Session = Depends(get_db),
     ).delete(synchronize_session=False)
     db.delete(g)
     db.commit()
+    registrar(db, Action.EXCLUSAO, user=_.user, entity_type="grupo", entity_id=grupo_id,
+              before=antes)
     return {"ok": True}
 
 
@@ -223,6 +232,8 @@ def criar_perfil(data: sch.PerfilCreate, db: Session = Depends(get_db),
     db.add(p)
     db.commit()
     db.refresh(p)
+    registrar(db, Action.CRIACAO, user=_.user, entity_type="perfil", entity_id=p.id,
+              after=_perfil_out(p))
     return _perfil_out(p)
 
 
@@ -263,8 +274,11 @@ def deletar_perfil(perfil_id: int, db: Session = Depends(get_db),
     db.query(ACLEntry).filter(
         ACLEntry.subject_type == "perfil", ACLEntry.subject_id == perfil_id
     ).delete(synchronize_session=False)
+    antes = _perfil_out(p)
     db.delete(p)
     db.commit()
+    registrar(db, Action.EXCLUSAO, user=_.user, entity_type="perfil",
+              entity_id=perfil_id, before=antes)
     return {"ok": True}
 
 
@@ -313,6 +327,13 @@ def atribuir_perfil(usuario_id: int, data: sch.AtribuirPerfil, db: Session = Dep
         db.add(up)
         db.commit()
         db.refresh(up)
+
+        registrar(
+            db, Action.ALTERACAO_PERMISSAO, user=_.user,
+            entity_type="usuario_perfil", entity_id=up.id,
+            after={"usuario_id": usuario_id, "perfil": perfil.nome,
+                   "resource_type": up.resource_type, "resource_id": up.resource_id},
+        )
     return {"id": up.id, "perfil_id": up.perfil_id, "perfil_nome": perfil.nome,
             "resource_type": up.resource_type, "resource_id": up.resource_id}
 
@@ -320,10 +341,17 @@ def atribuir_perfil(usuario_id: int, data: sch.AtribuirPerfil, db: Session = Dep
 @router.delete("/usuarios/{usuario_id}/perfis/{atribuicao_id}", response_model=schemas_legado.OkOut)
 def remover_perfil(usuario_id: int, atribuicao_id: int, db: Session = Depends(get_db),
                    _: PermissionService = Depends(exige_admin)):
-    db.query(UsuarioPerfil).filter(
+    removidas = db.query(UsuarioPerfil).filter(
         UsuarioPerfil.id == atribuicao_id, UsuarioPerfil.usuario_id == usuario_id
     ).delete(synchronize_session=False)
     db.commit()
+    if removidas:
+        registrar(
+            db, Action.ALTERACAO_PERMISSAO, user=_.user,
+            entity_type="usuario_perfil", entity_id=atribuicao_id,
+            before={"usuario_id": usuario_id},
+            metadata={"operacao": "remocao_de_perfil"},
+        )
     return {"ok": True}
 
 
@@ -383,6 +411,18 @@ def conceder(data: sch.ACLCreate, db: Session = Depends(get_db),
         db.add(entrada)
     db.commit()
     db.refresh(entrada)
+
+    registrar(
+        db, Action.ALTERACAO_PERMISSAO, user=perms.user,
+        entity_type="acl_entry", entity_id=entrada.id,
+        project_id=alvo.id if alvo.tipo.value == "projeto" else None,
+        document_id=alvo.id if alvo.tipo.value == "documento" else None,
+        after={
+            "subject_type": entrada.subject_type, "subject_id": entrada.subject_id,
+            "resource_type": entrada.resource_type, "resource_id": entrada.resource_id,
+            "permission": entrada.permission, "allow": entrada.allow,
+        },
+    )
     return entrada
 
 
@@ -394,8 +434,19 @@ def revogar(entry_id: int, db: Session = Depends(get_db),
         raise HTTPException(404, "Entrada não encontrada")
     alvo = _recurso(entrada.resource_type, entrada.resource_id)
     perms.exigir(Permission.MANAGE_PERMISSIONS, alvo)
+    antes = {
+        "subject_type": entrada.subject_type, "subject_id": entrada.subject_id,
+        "resource_type": entrada.resource_type, "resource_id": entrada.resource_id,
+        "permission": entrada.permission, "allow": entrada.allow,
+    }
     db.delete(entrada)
     db.commit()
+
+    registrar(
+        db, Action.ALTERACAO_PERMISSAO, user=perms.user,
+        entity_type="acl_entry", entity_id=entry_id, before=antes,
+        metadata={"operacao": "revogacao"},
+    )
     return {"ok": True}
 
 

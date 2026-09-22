@@ -10,6 +10,8 @@ registradas em `Base.metadata` antes do SQLAlchemy configurar os mappers — as
 direto de `indoc.<dominio>.models`, mas quem cria o engine/metadata (Alembic,
 fixtures de teste) deve continuar passando por aqui.
 """
+from indoc.audit.models import AuditLog
+from indoc.auth.models import IdentidadeExterna, LoginThrottle, UserSession
 from indoc.core.database import Base
 from indoc.core.time import utcnow
 from indoc.documents.models import (
@@ -51,6 +53,10 @@ __all__ = [
     "PerfilPermissao",
     "UsuarioPerfil",
     "ACLEntry",
+    "UserSession",
+    "LoginThrottle",
+    "IdentidadeExterna",
+    "AuditLog",
     "Fluxo",
     "Atividade",
     "ConfigTransicao",

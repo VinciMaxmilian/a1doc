@@ -3,22 +3,40 @@
 Diagnóstico do estado atual frente ao roadmap de 100 fases (`NEWPLAN.md`) e plano de
 execução. Documento vivo: atualize o status de cada fase ao concluí-la.
 
-**Baseline verificada em 2026-09-22** (ambiente local):
+## Estado da execução
+
+| Etapa | Status |
+|---|---|
+| Etapa 0 — Preparo | **concluída** |
+| FASE 1 — ACL | **concluída** |
+| FASE 2 — Autenticação + Firebase | **concluída** |
+| FASE 3 — Auditoria | **concluída** |
+| FASE 4/5/7/8 — Modelo documental | próxima |
+
+**Gate em 2026-09-22, após a FASE 3:**
 
 | Verificação | Resultado |
 |---|---|
-| `pytest` | 97 passed |
+| `pytest` | 203 passed |
 | `ruff check .` | All checks passed |
 | `alembic upgrade head` + `alembic check` | No new upgrade operations detected |
-| Migrations existentes | `0001_schema_inicial`, `0002_atividade_ordem_role` |
-| Backend | 1.838 linhas Python, 14 models, 5 routers |
-| Frontend | 7 páginas, 5 componentes, 0 testes |
+| `npm test` | 23 passed |
+| `npm run build` | OK |
+| Migrations | `0001`…`0005_audit_log` |
+| Backend | 24 models, 7 routers, pacote `indoc/` modular |
+| Frontend | 10 páginas, 5 componentes, 3 suítes de teste |
+
+Baseline de partida, para comparação: 97 testes de backend, 0 de frontend,
+14 models, 2 migrations.
 
 ---
 
-## 1. Arquitetura atual (o que realmente existe)
+## 1. Arquitetura de partida (diagnóstico inicial)
 
-### Modelo de dados (`backend/models.py`, 14 tabelas)
+> Fotografia do código **antes** da Etapa 0. Mantida como registro do ponto de
+> partida — o que mudou desde então está na seção 6 e em `docs/permissions.md`.
+
+### Modelo de dados (14 tabelas)
 
 ```
 User
@@ -29,7 +47,7 @@ Fluxo -> Atividade -> ConfigTransicao
 UploadJob
 ```
 
-### Autenticação e autorização
+### Autenticação e autorização (situação de partida)
 
 - JWT HS256 (PyJWT), expiração única de 480 min, sem refresh token.
 - bcrypt com truncamento explícito em 72 bytes.
@@ -87,12 +105,14 @@ Isso é exatamente o que a FASE 2 pede ao exigir arquitetura preparada para SSO.
 
 ### Pendências a resolver antes de implementar
 
-- **Service account ausente.** A config em `NEWDATABASE.md` é a config *de cliente web*
-  (`apiKey` pública). Ela serve ao frontend. Verificar tokens não precisa dela, mas
-  operações administrativas — criar usuário pelo servidor, definir custom claims,
-  revogar refresh tokens — exigem o **Firebase Admin SDK** com um service account JSON.
-  Decidir: (a) obter o service account, ou (b) manter criação/bloqueio de usuários
-  apenas no lado Indoc, usando o Firebase somente para provar identidade.
+- **Service account: decidido pela opção (b)** — o Firebase só prova identidade;
+  criação e bloqueio de usuários ficam no Indoc. Nada depende do Admin SDK. Se o
+  service account for gerado depois, entra como incremento (revogar refresh do
+  lado do Firebase, custom claims).
+- **Firestore não é usado.** O banco criado no projeto `indoc-71c52` fica vazio:
+  a decisão é Firebase só para Auth. Pode ser removido.
+- **Providers habilitados no Firebase:** e-mail/senha e Google. Os dois emitem o
+  mesmo tipo de ID token e são tratados igual pelo `FirebaseProvider`.
 - **Chaves expostas.** As credenciais em `NEWDATABASE.md` já estão no histórico do git.
   Apagar o arquivo não as remove. Se `indoc-71c52` deixar de ser descartável, rotacionar.
 
@@ -108,13 +128,13 @@ Legenda: OK = existente · PARCIAL · AUSENTE
 
 | Fase | Capacidade | Status | Evidência / lacuna |
 |---|---|---|---|
-| 1 | RBAC + ACL granular | PARCIAL | 3 papéis hardcoded. Sem grupos, perfis, ACL por recurso, herança ou deny. **Listagem de documentos não filtra nada: todo usuário autenticado vê todos os documentos.** |
-| 2 | Autenticação corporativa | PARCIAL | JWT + bcrypt funcionam. Sem refresh token, sem cookie HttpOnly, sem `UserSession`, sem rate limiting, sem bloqueio progressivo. Token em `localStorage`. |
-| 3 | Auditoria completa | PARCIAL | `HistoricoWorkflow` cobre só transições de workflow. Sem `AuditLog`, sem before/after, sem IP/user-agent/request_id, sem tela de consulta. |
+| 1 | RBAC + ACL granular | **OK** | `PermissionService` central, grupos, perfis configuráveis, ACL por recurso com herança `global→ambiente→área→projeto→documento` e deny explícito. Listagem, detalhe e download com escopo. Tela `/admin/permissoes`. Ver `docs/permissions.md`. |
+| 2 | Autenticação corporativa | **OK** | Access token curto em cookie `HttpOnly` + refresh rotativo com detecção de reuso, `UserSession` rastreável, revogação imediata (uma ou todas), CSRF double-submit, bloqueio progressivo por usuário e IP. `AuthProvider` com local + Firebase; preparado para OIDC/SSO. Ver `docs/auth.md`. |
+| 3 | Auditoria completa | **OK** | `AuditLog` append-only com before/after, IP, user-agent, `request_id` e sessão. Login, acesso, download, revisão, aprovação, metadado e permissão instrumentados. Tela `/admin/auditoria` com filtros. Ver `docs/auditoria.md`. |
 | 4 | Modelo documental profissional | PARCIAL | `Documento` tem 10 colunas. Faltam ~25 atributos documentais (disciplina, status, confidencialidade, datas, originador, aprovador…). Campos dinâmicos existem mas sem distinção sistêmico x configurável. |
 | 7 | Revisionamento avançado | PARCIAL | Revisão é um `Integer` (`revisao_indice`) — não existe entidade `Revisao`. Sem descrição, motivo, status, datas, esquemas configuráveis (A/B/C, 0/1/2). |
 | 8 | Checksum e integridade | AUSENTE | `DocumentoArquivo` não guarda checksum, tamanho, MIME nem extensão. |
-| 68 | Segurança / hardening | PARCIAL | Sólido em path traversal, download autenticado, CORS restrito, allowlist de extensão, limite de upload. Falta rate limiting, CSP, HSTS, CSRF, validação de MIME real. |
+| 68 | Segurança / hardening | PARCIAL | Path traversal, download autorizado, CORS restrito, allowlist de extensão, limite de upload, **cookies HttpOnly/Secure, CSRF, rate limiting de login**. Faltam CSP, HSTS e validação de MIME real. |
 
 ### P1 — EDMS
 
@@ -186,7 +206,7 @@ Legenda: OK = existente · PARCIAL · AUSENTE
 | 59 | Storage abstraction | AUSENTE | `UPLOAD_DIR` local acoplado em `utils.py`, `tasks.py` e `routers/documentos.py`. |
 | 60 | Antivírus | AUSENTE | — |
 | 61 | Celery robusto | PARCIAL | Uma task, uma fila, sem retry/backoff/timeout/idempotência/dead-letter. |
-| 62 | Observabilidade | PARCIAL | `setup_logging()` e `/health` existem. Sem structured logging, request_id, métricas, `/ready`. |
+| 62 | Observabilidade | PARCIAL | `X-Request-ID` por requisição (propagado até a auditoria), logging com `request_id` e formato `text`/`json`. Faltam métricas, `/ready` e health de worker. |
 | 63 | Performance | PARCIAL | `joinedload` bem usado em documentos/hierarquia, índices nas FKs, paginação. Sem análise de query, cache ou teste de volume. |
 | 70 | Multi-tenancy | AUSENTE | Nenhum escopo organizacional. |
 | 80 | Administração low-code | AUSENTE | — |
@@ -214,15 +234,15 @@ Legenda: OK = existente · PARCIAL · AUSENTE
 
 | Fase | Capacidade | Status | Evidência / lacuna |
 |---|---|---|---|
-| 64 | Frontend modular | AUSENTE | `index.css` monolítico, sem lazy loading nem code splitting. |
+| 64 | Frontend modular | AUSENTE | `index.css` monolítico, sem lazy loading nem code splitting. (Não tocado na Etapa 0.) |
 | 65 | Design system | PARCIAL | 5 componentes (`Modal`, `ConfirmModal`, `GlassTabs`, `Layout`, `PrivateRoute`). Faltam ~13 dos listados. |
 | 66 | Tabelas corporativas | AUSENTE | — |
-| 67 | Testes frontend | AUSENTE | Zero. Sem Vitest, Testing Library ou Playwright. Bloqueia o gate da FASE 100. |
+| 67 | Testes frontend | PARCIAL | Vitest + Testing Library instalados, 14 testes, passo no CI. Falta Playwright/E2E. |
 | 69 | LGPD e governança | AUSENTE | — |
 | 86 | Acessibilidade | AUSENTE | Não auditado. |
 | 87 | Responsividade | PARCIAL | Não verificado sistematicamente. |
 | 88 | PWA | AUSENTE | — |
-| 89 | Documentação | PARCIAL | `README.md` é bom e honesto. **`ANALISE.md` está referenciado no README mas não existe.** Nenhum arquivo em `docs/`. |
+| 89 | Documentação | PARCIAL | `docs/permissions.md`, `docs/auth.md`, `docs/auditoria.md`. Faltam architecture, database, workflow, edms, transmittals, search, ai, deployment. |
 | 90 | ADRs | AUSENTE | — |
 | 91 | Seeds de demonstração | AUSENTE | Só o seed do admin. |
 | 92 | Teste de carga | AUSENTE | — |
@@ -231,16 +251,19 @@ Legenda: OK = existente · PARCIAL · AUSENTE
 | 95 | Admin health dashboard | AUSENTE | Só `/health` trivial. |
 | 97 | Licenciamento de dependências | PARCIAL | Versões fixas em `requirements.txt`, sem registro de licenças. |
 | 98 | Critério final de paridade | PARCIAL | Este documento. |
-| 99 | Estrutura modular | AUSENTE | `models.py` e `schemas.py` únicos. |
-| 100 | Gate de qualidade | OK | CI roda ruff + pytest + alembic check + build. **Falta o gate de testes de frontend.** |
+| 99 | Estrutura modular | PARCIAL | Pacote `indoc/` com `core/users/hierarchy/documents/workflow/permissions/audit/auth`. `permissions`, `auth` e `audit` já completos (models+schemas+service+router). Falta mover `schemas.py` legado e os routers de documentos/hierarquia/workflow. |
+| 100 | Gate de qualidade | OK | CI roda ruff + pytest + alembic check + `npm test` + build. |
 
 ### Resumo
 
-| Status | Fases |
-|---|---|
-| OK (existente) | 1 |
-| PARCIAL | 22 |
-| AUSENTE | 77 |
+| Status | Fases | Antes da Etapa 0 |
+|---|---|---|
+| OK | 5 | 1 |
+| PARCIAL | 21 | 22 |
+| AUSENTE | 74 | 77 |
+
+P0 — Governança está concluído, exceto o modelo documental (fases 4/5/7/8), que
+é a próxima etapa.
 
 O núcleo é pequeno mas de boa qualidade: sanitização de path bem feita, download
 autenticado, `unique_path` atômico com `O_EXCL`, migrations reais, testes verdes,
@@ -254,18 +277,20 @@ Ordenadas por impacto no que vem depois.
 
 | # | Dívida | Por que bloqueia | Onde |
 |---|---|---|---|
-| D1 | **Listagem de documentos sem escopo de acesso** | Qualquer usuário autenticado lista todos os documentos de todos os projetos. É o problema que a FASE 1 existe para resolver — e o mesmo vale para a árvore de hierarquia. | `routers/documentos.py:99`, `routers/hierarquia.py:22` |
-| D2 | **Autorização espalhada nos routers** | A FASE 1 exige `PermissionService` central e proíbe lógica replicada. Hoje `_pode_transitar`/`_pode_enviar_revisao` vivem dentro do router de documentos. | `routers/documentos.py:31-49` |
-| D3 | **`models.py` e `schemas.py` monolíticos** | P0 sozinha adiciona ~8 models (Grupo, UsuarioGrupo, Perfil, ACL, UserSession, AuditLog, Revisao…). Fazer a FASE 99 *depois* significa mover 50 models. Fazer o esqueleto modular *antes* custa pouco. | `backend/models.py`, `backend/schemas.py` |
-| D4 | **`AUTO_CREATE_TABLES` default `True`** | `NEWPLAN.md` é explícito: "nunca deixe o banco dependendo de `create_all`". O default deveria ser `false`, com os testes ligando explicitamente. | `config.py:52` |
+| ~~D1~~ | ~~**Listagem de documentos sem escopo de acesso**~~ — **resolvida na FASE 1.** `_somente_legiveis` filtra na query; `GET /{id}` e o download passaram a exigir permissão. Por compatibilidade, o perfil semente `usuario_padrao` ainda concede leitura global: fechar de fato é remover essa atribuição (ver `docs/permissions.md`). | Qualquer usuário autenticado lista todos os documentos de todos os projetos. É o problema que a FASE 1 existe para resolver — e o mesmo vale para a árvore de hierarquia. | `routers/documentos.py:99`, `routers/hierarquia.py:22` |
+| ~~D2~~ | ~~**Autorização espalhada nos routers**~~ — **resolvida.** Tudo passa pelo `PermissionService`; o que restou em `documentos.py` é a restrição de workflow (`role_requerido`), que é outra coisa. | A FASE 1 exige `PermissionService` central e proíbe lógica replicada. Hoje `_pode_transitar`/`_pode_enviar_revisao` vivem dentro do router de documentos. | `routers/documentos.py:31-49` |
+| D3 | **`schemas.py` monolítico** (models: resolvido na Etapa 0) | P0 sozinha adiciona ~8 models (Grupo, UsuarioGrupo, Perfil, ACL, UserSession, AuditLog, Revisao…). Fazer a FASE 99 *depois* significa mover 50 models. Fazer o esqueleto modular *antes* custa pouco. | `backend/models.py`, `backend/schemas.py` |
+| ~~D4~~ | ~~**`AUTO_CREATE_TABLES` default `True`**~~ — **resolvida.** Default `false`; o conftest liga explicitamente. | `NEWPLAN.md` é explícito: "nunca deixe o banco dependendo de `create_all`". O default deveria ser `false`, com os testes ligando explicitamente. | `config.py:52` |
 | D5 | **Caminho de arquivo derivado de nomes mutáveis** | `doc_rev_dir()` monta o path com os nomes de ambiente/área/projeto/documento. Renomear qualquer um órfã os arquivos já gravados — não há rename handling. Resolver junto da FASE 59 (`StorageProvider`), usando IDs. | `utils.py:89`, `tasks.py:110` |
 | D6 | **`Documento.codigo` é UUID aleatório** | `DOC-3F2A9B1C` não é código documental. A FASE 6 substitui isso por template configurável — e precisa de estratégia de migração para os códigos já emitidos. | `tasks.py:85` |
 | D7 | **Revisão é um inteiro, não uma entidade** | GRD (23) precisa fotografar *qual revisão* foi enviada; checksum (8), comparação (35) e confirmação de recebimento (25) todos dependem de `Revisao` existir. É a mudança estrutural mais cara de P0. | `models.py` (`Documento.revisao_indice`) |
-| D8 | **Sem soft delete em lugar nenhum** | Deletes são físicos e as FKs são `NOT NULL`, por isso os endpoints bloqueiam exclusão quando há documentos. A FASE 40 muda isso — mas auditoria (3) e retenção (39) já pressupõem que nada desaparece. | `routers/hierarquia.py` |
-| D9 | **Sem request_id / structured logging** | `AuditLog` tem campo `request_id`. Sem middleware de correlação, ele nasce vazio. Fazer antes da FASE 3. | `main.py`, `config.py` |
-| D10 | **Zero testes de frontend** | A FASE 100 exige rodar testes de frontend ao fim de cada fase. Hoje esse gate não existe e o CI só faz `npm run build`. | `frontend/`, `.github/workflows/ci.yml` |
-| D11 | **`ANALISE.md` referenciado mas inexistente** | O README aponta para ele. Ou recriar, ou substituir o link por este roadmap. | `README.md` (última linha) |
+| D8 | **Sem soft delete em lugar nenhum** (atenuada: a auditoria já preserva o histórico de exclusões, mas a entidade some) | Deletes são físicos e as FKs são `NOT NULL`, por isso os endpoints bloqueiam exclusão quando há documentos. A FASE 40 muda isso — mas auditoria (3) e retenção (39) já pressupõem que nada desaparece. | `routers/hierarquia.py` |
+| ~~D9~~ | ~~**Sem request_id / structured logging**~~ — **resolvida.** `RequestIdMiddleware` + `LOG_FORMAT=text\|json`. | `AuditLog` tem campo `request_id`. Sem middleware de correlação, ele nasce vazio. Fazer antes da FASE 3. | `main.py`, `config.py` |
+| ~~D10~~ | ~~**Zero testes de frontend**~~ — **resolvida.** Vitest + Testing Library, 14 testes, passo no CI. Playwright fica para a FASE 67. | A FASE 100 exige rodar testes de frontend ao fim de cada fase. Hoje esse gate não existe e o CI só faz `npm run build`. | `frontend/`, `.github/workflows/ci.yml` |
+| ~~D11~~ | ~~**`ANALISE.md` referenciado mas inexistente**~~ — **resolvida.** README aponta para este roadmap. | O README aponta para ele. Ou recriar, ou substituir o link por este roadmap. | `README.md` (última linha) |
 | D12 | **Celery sem retry/idempotência** | `processar_upload` re-executada duplicaria arquivos: o upsert é por `(nome, projeto_id)`, mas os `DocumentoArquivo` seriam inseridos de novo. Resolver antes de multiplicar as filas (FASE 61). | `tasks.py:68` |
+
+| D13 | **react-router com open-redirect conhecido** | GHSA-wrjc-x8rr-h8h6 afeta todo o 6.x e 7.x até 7.17.0; só é corrigido no 7.18.4, que é mudança de major. `npm audit fix` subiu 6.21→6.30.6 mas **não** limpa o advisory. Risco prático baixo enquanto nenhum destino de navegação vier de entrada do usuário. Decidir na FASE 68 (hardening) ou 64 (frontend modular). | `frontend/package.json` |
 
 ---
 

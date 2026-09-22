@@ -1,4 +1,4 @@
-from conftest import auth, criar_usuario, token_de
+from conftest import auth, criar_usuario, sem_sessao, token_de
 
 import models
 
@@ -159,5 +159,6 @@ def test_papel_correto_transita(client, db, documento, fluxo_inicial):
 
 
 def test_transitar_exige_autenticacao(client, documento):
-    r = client.post(f"/documentos/{documento['id']}/transitar", json={"acao": "aprovado"})
+    r = sem_sessao(client).post(f"/documentos/{documento['id']}/transitar",
+                                json={"acao": "aprovado"})
     assert r.status_code == 401

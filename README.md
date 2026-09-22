@@ -9,7 +9,7 @@ Hierarquia **Ambiente → Área → Projeto → Documento**, formulários dinâm
 - **Backend:** FastAPI + SQLAlchemy 2.0 + MySQL
 - **Migrations:** Alembic
 - **Fila assíncrona:** Celery + Redis (processamento de uploads)
-- **Auth:** JWT (PyJWT) + bcrypt
+- **Auth:** access token curto + refresh rotativo em cookie HttpOnly; provider Firebase opcional
 - **Frontend:** React 18 + Vite
 
 ## Requisitos
@@ -106,7 +106,7 @@ alembic upgrade head
 ```bash
 cd backend
 pip install -r requirements-dev.txt
-pytest              # 105 testes, SQLite em diretório temporário
+pytest              # 203 testes, SQLite em diretório temporário
 ruff check .
 ```
 
@@ -163,9 +163,9 @@ backend/
     hierarchy/       # ambiente, área, projeto
     documents/       # documento, arquivo, tipo, campo, valor, upload job
     workflow/        # fluxo, atividade, transição, histórico
-    permissions/     # FASE 1 — ACL
-    audit/           # FASE 3 — AuditLog
-    auth/            # FASE 2 — providers (local, Firebase, OIDC)
+    permissions/     # ACL: constants, models, service, deps, router, seed
+    audit/           # auditoria: actions, models, service, router
+    auth/            # sessões, tokens, cookies, CSRF, throttle, providers
 frontend/
   src/pages/         # telas
   src/components/    # UI compartilhada
@@ -177,12 +177,41 @@ reexportam o que vive em `indoc/`. Importar `models` continua funcionando — e 
 que garante que todas as classes estejam registradas em `Base.metadata` antes do
 SQLAlchemy resolver as `relationship()`. Código novo deve importar de `indoc.*`.
 
+## Autenticação
+
+Access token curto em cookie `HttpOnly` + refresh token rotativo, com detecção
+de reuso, revogação imediata por sessão e bloqueio progressivo contra força
+bruta. O token **não** fica mais em `localStorage`.
+
+`COOKIE_SECURE` é `true` por padrão — em dev sobre `http://localhost` defina
+`COOKIE_SECURE=false`, senão o navegador descarta o cookie e o login não
+persiste.
+
+Firebase é suportado como provider de **identidade** (e-mail/senha e Google),
+sem service account. O Firestore não é usado: o MySQL continua sendo o source
+of truth. Ver [docs/auth.md](docs/auth.md).
+
+## Auditoria
+
+Registro append-only de login, acesso, download, revisão, aprovação, alteração
+de metadado e de permissão, com IP, dispositivo e `request_id`. Consulta em
+**Administração → Auditoria**. Ver [docs/auditoria.md](docs/auditoria.md).
+
 ## Observabilidade
 
 Toda requisição recebe um `X-Request-ID` (reaproveitado do cliente quando vem em
 formato aceito, gerado caso contrário) que é ecoado na resposta e aparece em todo
 log emitido durante o tratamento. `LOG_FORMAT=json` troca o formato de texto por
 um objeto por linha, para agregadores.
+
+## Permissões
+
+Controle de acesso por ACL com herança `global → ambiente → área → projeto →
+documento`, grupos, perfis configuráveis e negação explícita. Toda a política é
+dado: nenhum endpoint replica lógica de autorização.
+
+Ver [docs/permissions.md](docs/permissions.md) — inclui a nota de
+compatibilidade sobre como fechar o acesso amplo herdado da versão anterior.
 
 ## Roadmap e estado atual
 

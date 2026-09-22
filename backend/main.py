@@ -8,6 +8,7 @@ import config
 import models
 from auth import hash_password
 from database import SessionLocal, engine
+from indoc.audit.router import router as auditoria_router
 from indoc.core.middleware import RequestIdMiddleware
 from indoc.permissions.router import router as permissoes_router
 from indoc.permissions.seed import atribuir_perfil_padrao, garantir_perfis
@@ -97,6 +98,7 @@ app.include_router(documentos.router)
 app.include_router(workflow.router)
 app.include_router(usuarios.router)
 app.include_router(permissoes_router)
+app.include_router(auditoria_router)
 
 
 @app.get("/")

@@ -30,9 +30,54 @@ DATABASE_URL = os.getenv("DATABASE_URL", "mysql+pymysql://root:password@localhos
 INSECURE_SECRET_KEYS = {"", "change-me", "troque-em-producao", "troque-em-producao-chave-muito-secreta"}
 SECRET_KEY = os.getenv("SECRET_KEY", "change-me")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = _int("ACCESS_TOKEN_EXPIRE_MINUTES", 480)
+
+# O access token ficou curto porque agora existe refresh token (FASE 2). Um
+# token de 8h era a única credencial e vivia em localStorage; hoje ele dura
+# minutos e a sessão longa é o refresh, em cookie HttpOnly.
+ACCESS_TOKEN_EXPIRE_MINUTES = _int("ACCESS_TOKEN_EXPIRE_MINUTES", 15)
+REFRESH_TOKEN_EXPIRE_DAYS = _int("REFRESH_TOKEN_EXPIRE_DAYS", 14)
 
 CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",") if o.strip()]
+
+# ── Cookies de sessão ──
+# `Secure` liga por padrão: cookie de sessão não deve trafegar em claro.
+# Em dev sobre http://localhost isso impede o navegador de guardar o cookie —
+# defina COOKIE_SECURE=false no .env local.
+COOKIE_SECURE = _bool("COOKIE_SECURE", True)
+COOKIE_SAMESITE = os.getenv("COOKIE_SAMESITE", "lax").strip().lower()
+COOKIE_DOMAIN = os.getenv("COOKIE_DOMAIN") or None
+
+# Confiar em X-Forwarded-For para determinar o IP do cliente. Só ligue se a API
+# estiver atrás de um proxy que reescreve esse header — caso contrário qualquer
+# cliente forja o IP que vai para a auditoria e para o bloqueio de login.
+TRUST_PROXY_HEADERS = _bool("TRUST_PROXY_HEADERS", False)
+
+COOKIE_ACCESS = "indoc_access"
+COOKIE_REFRESH = "indoc_refresh"
+COOKIE_CSRF = "indoc_csrf"
+HEADER_CSRF = "X-CSRF-Token"
+
+# ── Proteção contra força bruta no login ──
+# Após LOGIN_MAX_FALHAS erros, bloqueia por LOGIN_BLOQUEIO_BASE_SEGUNDOS e
+# dobra a cada novo bloqueio, até o teto.
+LOGIN_MAX_FALHAS = _int("LOGIN_MAX_FALHAS", 5)
+LOGIN_BLOQUEIO_BASE_SEGUNDOS = _int("LOGIN_BLOQUEIO_BASE_SEGUNDOS", 60)
+LOGIN_BLOQUEIO_MAX_SEGUNDOS = _int("LOGIN_BLOQUEIO_MAX_SEGUNDOS", 3600)
+LOGIN_JANELA_FALHAS_MINUTOS = _int("LOGIN_JANELA_FALHAS_MINUTOS", 15)
+
+# ── Firebase (provider de identidade — FASE 2) ──
+# Só prova QUEM é o usuário. Papel, grupos e ACL continuam no MySQL, e a
+# criação/bloqueio de usuários é do Indoc (não exige service account).
+FIREBASE_ENABLED = _bool("FIREBASE_ENABLED", False)
+FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID", "")
+FIREBASE_JWKS_URL = os.getenv(
+    "FIREBASE_JWKS_URL",
+    "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com",
+)
+# Usuário do Firebase sem correspondente no Indoc: criar na hora (com o perfil
+# padrão) ou recusar o login. Recusar é o default — numa instalação corporativa
+# quem entra é quem foi cadastrado.
+FIREBASE_AUTO_PROVISIONAR = _bool("FIREBASE_AUTO_PROVISIONAR", False)
 
 # ── Armazenamento ──
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "./uploads")).resolve()

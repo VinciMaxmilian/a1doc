@@ -20,7 +20,7 @@ export default function Login() {
       const res = await api.post('/auth/login', params, {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       })
-      login(res.data.user, res.data.access_token)
+      login(res.data.user)
       navigate('/documentos')
     } catch (err) {
       setErro(mensagemErro(err, 'Credenciais inválidas'))

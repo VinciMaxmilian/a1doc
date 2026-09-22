@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { TOKEN_KEY, USER_KEY, setUnauthorizedHandler } from '../api'
+import api, { USER_KEY, setUnauthorizedHandler } from '../api'
 
 const Ctx = createContext(null)
 
@@ -10,14 +10,21 @@ export function AuthProvider({ children }) {
     try { return JSON.parse(localStorage.getItem(USER_KEY)) } catch { return null }
   })
 
-  function login(userData, token) {
-    localStorage.setItem(TOKEN_KEY, token)
+  // A sessão vive nos cookies HttpOnly (FASE 2); aqui guardamos só o perfil
+  // exibido na interface, para a tela não piscar enquanto /auth/me responde.
+  function login(userData) {
     localStorage.setItem(USER_KEY, JSON.stringify(userData))
     setUser(userData)
   }
 
-  const logout = useCallback(() => {
-    localStorage.removeItem(TOKEN_KEY)
+  const logout = useCallback(async () => {
+    try {
+      // Precisa ir ao servidor: é o que revoga a sessão de verdade. Limpar só
+      // o estado local deixaria o refresh token vivo no banco.
+      await api.post('/auth/logout')
+    } catch {
+      // Sessão já inválida no servidor — seguir com a limpeza local.
+    }
     localStorage.removeItem(USER_KEY)
     setUser(null)
   }, [])
