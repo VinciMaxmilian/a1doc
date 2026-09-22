@@ -6,14 +6,19 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import desc
+from sqlalchemy import and_, desc, false, or_
 from sqlalchemy.orm import Session, joinedload
 
 import config
 import models
 import schemas
-from auth import get_current_user, is_admin, require_admin
+from auth import get_current_user, is_admin
 from database import get_db
+from indoc.permissions.constants import Permission
+from indoc.permissions.deps import get_permissions
+from indoc.permissions.service import PermissionService
+from indoc.permissions.service import documento as rec_documento
+from indoc.permissions.service import projeto as rec_projeto
 from utils import (
     doc_rev_dir,
     ensure_within,
@@ -28,24 +33,25 @@ router = APIRouter(prefix="/documentos", tags=["documentos"])
 
 
 # ────────────────────────── autorização ──────────────────────────
+#
+# A decisão de acesso é da ACL (PermissionService). O que sobra aqui é a
+# restrição de WORKFLOW — `Atividade.role_requerido`, que diz qual papel detém
+# a atividade em que o documento está parado. São coisas diferentes: a ACL
+# responde "pode aprovar documentos deste projeto?", o role_requerido responde
+# "a bola está com você agora?".
+#
+# A FASE 11 (responsáveis e matriz de distribuição) substitui o role_requerido
+# por regras de responsável de verdade; até lá as duas checagens convivem e
+# AMBAS precisam passar.
 
-def _pode_transitar(user: models.User, doc: models.Documento) -> bool:
-    """Quem pode mover o documento na atividade em que ele está.
 
-    Admin/dev sempre podem. Se a atividade define `role_requerido`, só esse
-    papel pode; caso contrário qualquer usuário autenticado pode.
-    """
+def _detem_atividade(user: models.User, doc: models.Documento) -> bool:
     if is_admin(user):
         return True
     ativ = doc.atividade_atual
     if ativ is None or ativ.role_requerido is None:
         return True
     return user.role == ativ.role_requerido
-
-
-def _pode_enviar_revisao(user: models.User, doc: models.Documento) -> bool:
-    """Responsável pelo documento, admin/dev, ou quem detém a atividade atual."""
-    return doc.responsavel_id == user.id or _pode_transitar(user, doc)
 
 
 def _exigir(condicao: bool, msg: str) -> None:
@@ -107,12 +113,13 @@ def listar(
     skip: int = Query(0, ge=0),
     limit: int = Query(config.DEFAULT_PAGE_SIZE, ge=1, le=config.MAX_PAGE_SIZE),
     db: Session = Depends(get_db),
-    _=Depends(get_current_user),
+    perms: PermissionService = Depends(get_permissions),
 ):
     q = db.query(models.Documento).options(
         joinedload(models.Documento.responsavel),
         joinedload(models.Documento.atividade_atual).joinedload(models.Atividade.fluxo),
     )
+    q = _somente_legiveis(q, perms)
     if id:                 q = q.filter(models.Documento.id == id)
     if nome:               q = q.filter(models.Documento.nome.ilike(f"%{nome}%"))
     if ambiente_id:        q = q.filter(models.Documento.ambiente_id == ambiente_id)
@@ -123,6 +130,30 @@ def listar(
     total = q.count()
     docs = q.order_by(desc(models.Documento.created_at)).offset(skip).limit(limit).all()
     return {"total": total, "skip": skip, "limit": limit, "itens": docs}
+
+
+def _somente_legiveis(q, perms: PermissionService):
+    """Restringe a query ao que o usuário pode ler.
+
+    Sem isto a ACL protegeria `GET /documentos/{id}` enquanto a listagem
+    continuaria devolvendo a base inteira — a falha D1 do roadmap.
+
+    Regra: vale o projeto, salvo regra no próprio documento, que sobrescreve
+    nos dois sentidos (um allow no documento entra mesmo com o projeto
+    fechado; um deny sai mesmo com o projeto aberto).
+    """
+    projetos = perms.projetos_legiveis()
+    if projetos is None:  # admin: sem restrição
+        return q
+
+    concedidos, negados = perms.documentos_com_regra_propria()
+
+    condicao = models.Documento.projeto_id.in_(projetos) if projetos else false()
+    if negados:
+        condicao = and_(condicao, ~models.Documento.id.in_(negados))
+    if concedidos:
+        condicao = or_(condicao, models.Documento.id.in_(concedidos))
+    return q.filter(condicao)
 
 
 def _validar_hierarquia(db: Session, ambiente_id: int, area_id: int,
@@ -153,8 +184,12 @@ async def upload(
     observacao: str = Form(None),
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
+    perms: PermissionService = Depends(get_permissions),
 ):
     _validar_hierarquia(db, ambiente_id, area_id, projeto_id, tipo_documento_id)
+    # Checado no PROJETO de destino: quem pode criar num projeto não pode,
+    # por isso, criar em qualquer outro.
+    perms.exigir(Permission.CREATE, rec_projeto(projeto_id))
 
     job_id = str(uuid.uuid4())
     tmp_dir = config.UPLOAD_DIR / "tmp" / job_id
@@ -232,14 +267,17 @@ def status_job(job_id: str, db: Session = Depends(get_db), _=Depends(get_current
 
 @router.get("/arquivos/{arquivo_id}/download")
 def baixar_arquivo(arquivo_id: int, db: Session = Depends(get_db),
-                   _=Depends(get_current_user)):
-    """Download autenticado. Os arquivos não são servidos como estáticos
+                   perms: PermissionService = Depends(get_permissions)):
+    """Download autorizado. Os arquivos não são servidos como estáticos
     públicos — o caminho no disco nunca é exposto ao cliente."""
     arq = db.query(models.DocumentoArquivo).filter(
         models.DocumentoArquivo.id == arquivo_id
     ).first()
     if not arq:
         raise HTTPException(404, "Arquivo não encontrado")
+
+    # A permissão é do DOCUMENTO: o arquivo é só a representação física dele.
+    perms.exigir(Permission.DOWNLOAD, rec_documento(arq.documento_id))
 
     try:
         # arquivo_path vem do banco, mas validamos mesmo assim: registro
@@ -263,9 +301,13 @@ async def upload_revisao(
     observacao: str = Form(None),
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
+    perms: PermissionService = Depends(get_permissions),
 ):
     doc = _load_ou_404(doc_id, db)
-    _exigir(_pode_enviar_revisao(user, doc),
+    perms.exigir(Permission.REVISE, rec_documento(doc_id))
+    # Além da ACL, a restrição de workflow: o responsável sempre pode revisar
+    # o próprio documento; os demais só se detiverem a atividade atual.
+    _exigir(doc.responsavel_id == user.id or _detem_atividade(user, doc),
             "Sem permissão para enviar revisão deste documento")
 
     filename = safe_filename(arquivo.filename or "")
@@ -293,13 +335,17 @@ async def upload_revisao(
 
 
 @router.get("/{doc_id}", response_model=schemas.DocumentoDetalheOut)
-def detalhe(doc_id: int, db: Session = Depends(get_db), _=Depends(get_current_user)):
+def detalhe(doc_id: int, db: Session = Depends(get_db),
+            perms: PermissionService = Depends(get_permissions)):
+    perms.exigir(Permission.READ, rec_documento(doc_id))
     return _detalhe(_load_ou_404(doc_id, db), db)
 
 
 @router.put("/{doc_id}/campos", response_model=schemas.OkOut)
 def atualizar_campos(doc_id: int, data: schemas.CamposUpdate,
-                     db: Session = Depends(get_db), _=Depends(require_admin)):
+                     db: Session = Depends(get_db),
+                     perms: PermissionService = Depends(get_permissions)):
+    perms.exigir(Permission.MANAGE_METADATA, rec_documento(doc_id))
     doc = db.query(models.Documento).filter(models.Documento.id == doc_id).first()
     if not doc:
         raise HTTPException(404, "Documento não encontrado")
@@ -335,11 +381,16 @@ def atualizar_campos(doc_id: int, data: schemas.CamposUpdate,
 
 @router.post("/{doc_id}/transitar", response_model=schemas.DocumentoDetalheOut)
 def transitar(doc_id: int, req: schemas.TransicaoRequest,
-              db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+              db: Session = Depends(get_db), user: models.User = Depends(get_current_user),
+              perms: PermissionService = Depends(get_permissions)):
     doc = _load_ou_404(doc_id, db)
     if not doc.atividade_atual_id:
         raise HTTPException(400, "Documento sem atividade atual")
-    _exigir(_pode_transitar(user, doc), "Sem permissão para transitar este documento")
+    # Aprovar e reprovar são permissões distintas: dá para deixar alguém
+    # devolver um documento sem poder liberá-lo.
+    exigida = Permission.APPROVE if req.acao == "aprovado" else Permission.REJECT
+    perms.exigir(exigida, rec_documento(doc_id))
+    _exigir(_detem_atividade(user, doc), "Sem permissão para transitar este documento")
 
     trans = db.query(models.ConfigTransicao).filter(
         models.ConfigTransicao.atividade_origem_id == doc.atividade_atual_id,

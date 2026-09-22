@@ -27,6 +27,7 @@ import celery_app as celery_module  # noqa: E402
 import models  # noqa: E402
 from auth import hash_password  # noqa: E402
 from database import SessionLocal, engine  # noqa: E402
+from indoc.permissions.seed import atribuir_perfil_padrao, garantir_perfis  # noqa: E402
 from main import app  # noqa: E402
 
 # Executa as tasks inline, sem broker. `eager_propagates=False` mantém o
@@ -40,6 +41,13 @@ celery_module.celery_app.conf.task_eager_propagates = False
 def _schema_limpo():
     models.Base.metadata.drop_all(bind=engine)
     models.Base.metadata.create_all(bind=engine)
+    # A ACL é default-deny: sem os perfis semente nenhum usuário poderia nada.
+    # Em produção quem faz isto é a migration 0003 / o startup.
+    sessao = SessionLocal()
+    try:
+        garantir_perfis(sessao)
+    finally:
+        sessao.close()
     yield
     models.Base.metadata.drop_all(bind=engine)
 
@@ -69,6 +77,7 @@ def criar_usuario(db, username="user1", role="user", senha="senha-forte-123"):
     db.add(u)
     db.commit()
     db.refresh(u)
+    atribuir_perfil_padrao(db, u)
     return u
 
 

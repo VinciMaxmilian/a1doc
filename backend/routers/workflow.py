@@ -6,8 +6,10 @@ from sqlalchemy.orm import Session, joinedload
 
 import models
 import schemas
-from auth import get_current_user, require_admin
+from auth import get_current_user
 from database import get_db
+from indoc.permissions.constants import Permission
+from indoc.permissions.deps import exige
 
 router = APIRouter(prefix="/workflow", tags=["workflow"])
 
@@ -41,7 +43,7 @@ def listar_fluxos(db: Session = Depends(get_db), _=Depends(get_current_user)):
 
 
 @router.post("/fluxos", response_model=schemas.FluxoOut, status_code=201)
-def criar_fluxo(data: schemas.FluxoCreate, db: Session = Depends(get_db), _=Depends(require_admin)):
+def criar_fluxo(data: schemas.FluxoCreate, db: Session = Depends(get_db), _=Depends(exige(Permission.MANAGE_WORKFLOW))):
     max_num = db.query(func.max(models.Fluxo.numero)).scalar()
     proximo = 0 if max_num is None else max_num + 1
     obj = models.Fluxo(numero=proximo, nome=data.nome, descricao=data.descricao)
@@ -52,7 +54,7 @@ def criar_fluxo(data: schemas.FluxoCreate, db: Session = Depends(get_db), _=Depe
 
 
 @router.delete("/fluxos/{id}", response_model=schemas.OkOut)
-def deletar_fluxo(id: int, db: Session = Depends(get_db), _=Depends(require_admin)):
+def deletar_fluxo(id: int, db: Session = Depends(get_db), _=Depends(exige(Permission.MANAGE_WORKFLOW))):
     obj = db.query(models.Fluxo).filter(models.Fluxo.id == id).first()
     if not obj:
         raise HTTPException(404, "Não encontrado")
@@ -79,7 +81,7 @@ def listar_atividades(fluxo_id: Optional[int] = None, db: Session = Depends(get_
 
 @router.post("/atividades", response_model=schemas.AtividadeOut, status_code=201)
 def criar_atividade(data: schemas.AtividadeCreate, db: Session = Depends(get_db),
-                    _=Depends(require_admin)):
+                    _=Depends(exige(Permission.MANAGE_WORKFLOW))):
     if not db.query(models.Fluxo).filter(models.Fluxo.id == data.fluxo_id).first():
         raise HTTPException(400, "Fluxo não encontrado")
     obj = models.Atividade(
@@ -93,7 +95,7 @@ def criar_atividade(data: schemas.AtividadeCreate, db: Session = Depends(get_db)
 
 
 @router.delete("/atividades/{id}", response_model=schemas.OkOut)
-def deletar_atividade(id: int, db: Session = Depends(get_db), _=Depends(require_admin)):
+def deletar_atividade(id: int, db: Session = Depends(get_db), _=Depends(exige(Permission.MANAGE_WORKFLOW))):
     obj = db.query(models.Atividade).filter(models.Atividade.id == id).first()
     if not obj:
         raise HTTPException(404, "Não encontrado")
@@ -121,7 +123,7 @@ def listar_transicoes(db: Session = Depends(get_db), _=Depends(get_current_user)
 
 @router.post("/transicoes", response_model=schemas.TransicaoOut)
 def criar_transicao(data: schemas.ConfigTransicaoCreate, db: Session = Depends(get_db),
-                    _=Depends(require_admin)):
+                    _=Depends(exige(Permission.MANAGE_WORKFLOW))):
     _atividade_ou_400(db, data.atividade_origem_id, "de origem")
     _atividade_ou_400(db, data.atividade_destino_id, "de destino")
 
@@ -141,7 +143,7 @@ def criar_transicao(data: schemas.ConfigTransicaoCreate, db: Session = Depends(g
 
 
 @router.delete("/transicoes/{id}", response_model=schemas.OkOut)
-def deletar_transicao(id: int, db: Session = Depends(get_db), _=Depends(require_admin)):
+def deletar_transicao(id: int, db: Session = Depends(get_db), _=Depends(exige(Permission.MANAGE_WORKFLOW))):
     obj = db.query(models.ConfigTransicao).filter(models.ConfigTransicao.id == id).first()
     if not obj:
         raise HTTPException(404, "Não encontrado")

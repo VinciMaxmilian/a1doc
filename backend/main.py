@@ -8,6 +8,9 @@ import config
 import models
 from auth import hash_password
 from database import SessionLocal, engine
+from indoc.core.middleware import RequestIdMiddleware
+from indoc.permissions.router import router as permissoes_router
+from indoc.permissions.seed import atribuir_perfil_padrao, garantir_perfis
 from routers import auth, documentos, hierarquia, usuarios, workflow
 
 config.setup_logging()
@@ -28,14 +31,28 @@ def seed_admin() -> None:
                 "Defina ADMIN_PASSWORD no .env para criar o admin inicial."
             )
             return
-        db.add(models.User(
+        admin = models.User(
             username=config.ADMIN_USERNAME,
             email=config.ADMIN_EMAIL,
             hashed_password=hash_password(config.ADMIN_PASSWORD),
             role="dev",
-        ))
+        )
+        db.add(admin)
         db.commit()
+        db.refresh(admin)
+        atribuir_perfil_padrao(db, admin)
         logger.info("Usuário admin inicial criado: %s", config.ADMIN_USERNAME)
+    finally:
+        db.close()
+
+
+def _semear_perfis() -> None:
+    """Garante os perfis semente. Idempotente — a migration 0003 já os cria
+    num banco migrado; isto cobre o banco criado por `create_all` e qualquer
+    perfil novo introduzido depois."""
+    db = SessionLocal()
+    try:
+        garantir_perfis(db)
     finally:
         db.close()
 
@@ -46,6 +63,7 @@ async def lifespan(app: FastAPI):
         # Conveniência para dev/testes. Em produção use Alembic
         # (`alembic upgrade head`) e defina AUTO_CREATE_TABLES=false.
         models.Base.metadata.create_all(bind=engine)
+    _semear_perfis()
     seed_admin()
     if config.secret_key_is_insecure():
         logger.warning("SECRET_KEY usando valor padrão inseguro. Defina SECRET_KEY no .env.")
@@ -60,7 +78,15 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Sem expor, o navegador esconde o header em resposta cross-origin e o
+    # front não consegue citar o request-id ao reportar um erro.
+    expose_headers=["X-Request-ID"],
 )
+
+# Registrado por último de propósito: `add_middleware` insere no início da
+# pilha, então este fica sendo o mais externo e todo o resto — inclusive o
+# CORS — roda com o request-id já definido.
+app.add_middleware(RequestIdMiddleware)
 
 # Atenção: os arquivos NÃO são servidos como estáticos públicos.
 # O download passa por GET /documentos/arquivos/{id}/download, que exige token.
@@ -70,6 +96,7 @@ app.include_router(hierarquia.router)
 app.include_router(documentos.router)
 app.include_router(workflow.router)
 app.include_router(usuarios.router)
+app.include_router(permissoes_router)
 
 
 @app.get("/")

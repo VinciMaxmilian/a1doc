@@ -47,9 +47,13 @@ ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@indoc.local")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 
 # ── Comportamento ──
-# Executa create_all/migrate no startup. Deixe desligado em produção e use Alembic.
-AUTO_CREATE_TABLES = _bool("AUTO_CREATE_TABLES", True)
+# Executa create_all no startup. O default é `false`: o schema pertence ao
+# Alembic (`alembic upgrade head`). Ligar isso faz o banco divergir das
+# migrations silenciosamente. Os testes ligam explicitamente no conftest.
+AUTO_CREATE_TABLES = _bool("AUTO_CREATE_TABLES", False)
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+# "text" (legível) ou "json" (uma linha por evento, para agregadores).
+LOG_FORMAT = os.getenv("LOG_FORMAT", "text").strip().lower()
 
 # Paginação
 DEFAULT_PAGE_SIZE = 20
@@ -61,14 +65,12 @@ def secret_key_is_insecure() -> bool:
 
 
 def setup_logging() -> None:
-    """Configura o logging raiz. Idempotente."""
-    import logging
+    """Configura o logging raiz. Idempotente.
 
-    if logging.getLogger().handlers:
-        logging.getLogger().setLevel(LOG_LEVEL)
-        return
-    logging.basicConfig(
-        level=LOG_LEVEL,
-        format="%(asctime)s %(levelname)-8s %(name)s | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    Import tardio: `indoc.core.logging` não depende de `config`, mas manter a
+    importação dentro da função deixa `config` livre de qualquer acoplamento
+    com o pacote da aplicação.
+    """
+    from indoc.core.logging import setup_logging as _setup
+
+    _setup(level=LOG_LEVEL, formato=LOG_FORMAT)

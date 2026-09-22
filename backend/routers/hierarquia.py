@@ -7,8 +7,22 @@ import models
 import schemas
 from auth import get_current_user, require_admin
 from database import get_db
+from indoc.permissions.constants import Permission
+from indoc.permissions.deps import exige
 
 router = APIRouter(prefix="/hierarquia", tags=["hierarquia"])
+
+# Nota sobre autorização nesta rota:
+#
+# Tipos de documento e campos do formulário são configuração de metadado e já
+# passaram para `MANAGE_METADATA`.
+#
+# Criar e excluir Ambiente/Área/Projeto continua em `require_admin`. A lista de
+# permissões da FASE 1 não tem uma que signifique "administrar a estrutura da
+# hierarquia", e reaproveitar `create` seria errado: `create` é concedida a
+# todo usuário (para criar documentos), então usá-la aqui deixaria qualquer um
+# criar ambientes. A permissão específica chega com o painel low-code da
+# FASE 80; até lá a checagem existente é a correta e não é afrouxada.
 
 
 def _bloquear_se_houver_documentos(db: Session, coluna, valor, msg: str) -> None:
@@ -135,7 +149,7 @@ def listar_tipos(db: Session = Depends(get_db), _=Depends(get_current_user)):
 
 @router.post("/tipos-documento", response_model=schemas.TipoDocumentoOut, status_code=201)
 def criar_tipo(data: schemas.TipoDocumentoCreate, db: Session = Depends(get_db),
-               _=Depends(require_admin)):
+               _=Depends(exige(Permission.MANAGE_METADATA))):
     obj = models.TipoDocumento(nome=data.nome)
     db.add(obj)
     db.commit()
@@ -144,7 +158,8 @@ def criar_tipo(data: schemas.TipoDocumentoCreate, db: Session = Depends(get_db),
 
 
 @router.delete("/tipos-documento/{id}", response_model=schemas.OkOut)
-def deletar_tipo(id: int, db: Session = Depends(get_db), _=Depends(require_admin)):
+def deletar_tipo(id: int, db: Session = Depends(get_db),
+                 _=Depends(exige(Permission.MANAGE_METADATA))):
     obj = db.query(models.TipoDocumento).filter(models.TipoDocumento.id == id).first()
     if not obj:
         raise HTTPException(404, "Não encontrado")
@@ -168,7 +183,8 @@ def listar_campos(tipo_id: int, db: Session = Depends(get_db), _=Depends(get_cur
 @router.post("/tipos-documento/{tipo_id}/campos",
              response_model=schemas.CampoFormularioOut, status_code=201)
 def criar_campo(tipo_id: int, data: schemas.CampoFormularioCreate,
-                db: Session = Depends(get_db), _=Depends(require_admin)):
+                db: Session = Depends(get_db),
+                _=Depends(exige(Permission.MANAGE_METADATA))):
     if not db.query(models.TipoDocumento).filter(models.TipoDocumento.id == tipo_id).first():
         raise HTTPException(400, "Tipo de documento não encontrado")
     if data.tipo == "select" and not data.opcoes:
@@ -184,7 +200,8 @@ def criar_campo(tipo_id: int, data: schemas.CampoFormularioCreate,
 
 
 @router.delete("/campos/{id}", response_model=schemas.OkOut)
-def deletar_campo(id: int, db: Session = Depends(get_db), _=Depends(require_admin)):
+def deletar_campo(id: int, db: Session = Depends(get_db),
+                  _=Depends(exige(Permission.MANAGE_METADATA))):
     obj = db.query(models.CampoFormulario).filter(models.CampoFormulario.id == id).first()
     if not obj:
         raise HTTPException(404, "Não encontrado")

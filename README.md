@@ -41,7 +41,7 @@ Variáveis obrigatórias no `.env`:
 | `CORS_ORIGINS` | Origem do frontend (ex.: `http://localhost:5173`). Nunca use `*` |
 | `UPLOAD_DIR` | Onde os arquivos ficam. **Precisa ser o mesmo valor na API e no worker** |
 | `ADMIN_PASSWORD` | Senha do admin inicial (criado só se não houver nenhum usuário) |
-| `AUTO_CREATE_TABLES` | `false` em produção — o schema é do Alembic |
+| `AUTO_CREATE_TABLES` | Mantenha `false` — o schema é do Alembic |
 
 Suba os serviços (Windows — via `.bat` na raiz):
 
@@ -106,11 +106,20 @@ alembic upgrade head
 ```bash
 cd backend
 pip install -r requirements-dev.txt
-pytest              # 97 testes, SQLite em diretório temporário
+pytest              # 105 testes, SQLite em diretório temporário
 ruff check .
 ```
 
-Os testes não precisam de MySQL nem de Redis: o Celery roda em modo *eager*.
+```bash
+cd frontend
+npm test            # Vitest + Testing Library
+npm run test:watch  # modo interativo
+```
+
+Os testes de backend não precisam de MySQL nem de Redis: o Celery roda em modo *eager*.
+
+O CI roda os dois lados, mais `alembic check` e o build do frontend. Nenhuma fase
+do roadmap é dada por concluída com qualquer um desses vermelho.
 
 ## Segurança
 
@@ -139,19 +148,43 @@ Fluxo → Atividade → ConfigTransição (origem + ação → destino)
 backend/
   config.py          # única leitura de env vars
   main.py            # app, lifespan, seed admin
-  models.py          # ORM
-  schemas.py         # entrada (validação) + saída (response_model)
   auth.py            # JWT + bcrypt + guards
   routers/           # auth, hierarquia, documentos, workflow, usuarios
   tasks.py           # Celery: processar_upload
   utils.py           # paths, sanitização de arquivos
   migrations/        # Alembic
   tests/             # pytest
+  models.py          # shim: reexporta indoc/*/models.py
+  schemas.py         # entrada (validação) + saída (response_model)
+  database.py        # shim: reexporta indoc/core/database.py
+  indoc/             # pacote modular (o código novo nasce aqui)
+    core/            # database, time, request_context, middleware, logging
+    users/           # models de usuário
+    hierarchy/       # ambiente, área, projeto
+    documents/       # documento, arquivo, tipo, campo, valor, upload job
+    workflow/        # fluxo, atividade, transição, histórico
+    permissions/     # FASE 1 — ACL
+    audit/           # FASE 3 — AuditLog
+    auth/            # FASE 2 — providers (local, Firebase, OIDC)
 frontend/
   src/pages/         # telas
   src/components/    # UI compartilhada
+  src/**/*.test.jsx  # Vitest
 ```
 
-## Análise técnica
+`models.py`, `schemas.py` e `database.py` na raiz são **shims de compatibilidade**:
+reexportam o que vive em `indoc/`. Importar `models` continua funcionando — e é o
+que garante que todas as classes estejam registradas em `Base.metadata` antes do
+SQLAlchemy resolver as `relationship()`. Código novo deve importar de `indoc.*`.
 
-Ver [ANALISE.md](ANALISE.md) — estado atual e pendências conhecidas.
+## Observabilidade
+
+Toda requisição recebe um `X-Request-ID` (reaproveitado do cliente quando vem em
+formato aceito, gerado caso contrário) que é ecoado na resposta e aparece em todo
+log emitido durante o tratamento. `LOG_FORMAT=json` troca o formato de texto por
+um objeto por linha, para agregadores.
+
+## Roadmap e estado atual
+
+Ver [ROADMAP_EDMS.md](ROADMAP_EDMS.md) — diagnóstico do estado atual frente ao
+roadmap EDMS, matriz de paridade funcional, dívidas técnicas e ordem de execução.

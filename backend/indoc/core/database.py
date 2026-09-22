@@ -1,0 +1,29 @@
+"""Engine, sessão e Base declarativa.
+
+Fonte única do `Base` — todo model do Indoc herda daqui. `backend/database.py`
+é um shim que reexporta estes nomes para não quebrar os imports existentes.
+"""
+from sqlalchemy import create_engine
+from sqlalchemy.orm import DeclarativeBase, sessionmaker
+
+from config import DATABASE_URL
+
+# SQLite (usado nos testes) não aceita os args de pool do MySQL.
+_engine_kwargs = {"pool_pre_ping": True}
+if DATABASE_URL.startswith("sqlite"):
+    _engine_kwargs = {"connect_args": {"check_same_thread": False}}
+
+engine = create_engine(DATABASE_URL, **_engine_kwargs)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()

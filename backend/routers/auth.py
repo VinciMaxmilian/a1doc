@@ -6,6 +6,7 @@ import models
 import schemas
 from auth import create_token, get_current_user, hash_password, require_admin, verify_password
 from database import get_db
+from indoc.permissions.seed import atribuir_perfil_padrao
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -35,6 +36,8 @@ def registrar(data: schemas.UsuarioCreate, db: Session = Depends(get_db),
     db.add(user)
     db.commit()
     db.refresh(user)
+    # A ACL é default-deny: sem perfil o usuário nasceria sem poder nada.
+    atribuir_perfil_padrao(db, user)
     return user
 
 
